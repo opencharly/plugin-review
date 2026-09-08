@@ -1,0 +1,47 @@
+# Optional direct-consumption release assets (the plugin-generate-packages
+# precedent): publish review-linux-{amd64,arm64} + review.providers so the plan
+# executor can materialize this plugin into $CHARLY_PLUGIN_DIR WITHOUT a new
+# charly release. The weld remains the primary distribution path.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Build the provider binary + .providers manifest
+        run: |
+          cd candy/plugin-review
+          mkdir -p /tmp/out
+          GOWORK=off GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /tmp/out/review-linux-amd64 ./cmd/serve
+          GOWORK=off GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /tmp/out/review-linux-arm64 ./cmd/serve
+      - name: Generate .providers (needs a charly binary with __plugin-providers)
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          GH="$HOME/.local/charly"; mkdir -p "$GH/bin"
+          gh release download "v${TAG:-latest}" --repo opencharly/charly --pattern 'charly-linux-amd64' --dir "$GH/bin" --clobber 2>/dev/null \
+            || gh release download --repo opencharly/charly --pattern 'charly-linux-amd64' --dir "$GH/bin" --clobber
+          chmod +x "$GH/bin/charly-linux-amd64"
+          "$GH/bin/charly-linux-amd64" __plugin-providers candy/plugin-review > /tmp/out/review.providers
+          cat /tmp/out/review.providers
+      - name: Upload assets to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            /tmp/out/review-linux-amd64
+            /tmp/out/review-linux-arm64
+            /tmp/out/review.providers

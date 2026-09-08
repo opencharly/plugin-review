@@ -1,0 +1,4 @@
+version: 2026.248.1030
+discover:
+    - path: candy
+      recursive: true

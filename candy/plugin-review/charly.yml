@@ -1,0 +1,33 @@
+plugin-review:
+    candy:
+        version: 2026.251.0000
+        description: |-
+            Read-only GitHub PR review for OpenCharly's gate: the deterministic
+            verb:pr tools (pr_diff / pr_commits / pr_thread / pr_meta) plus
+            command:review — the same chat-completions agent loop the retired
+            pi-review-action ran: four read-only GitHub tools, a deterministic
+            Verdict: PASS|BLOCK line, ONE PR comment, and $GITHUB_OUTPUT
+            compatibility (response/success/verdict). Also serves the runtime
+            orchestration executor (charly review --plan <path>) that turns a
+            declared review-plan.yml into a step pipeline, so ANY runtime plugin
+            can join the review workflow purely through config. The review
+            rulebook is a 1:1 port of pi-review-action's prompt.txt, resolved at
+            run time via REVIEW_PROMPT_PATH (T1: instructions from main, never
+            the PR under review).
+        plugin:
+            providers:
+                - verb:pr
+                - command:review
+            source: github.com/opencharly/plugin-review/candy/plugin-review
+        require:
+            - '@github.com/opencharly/layer-gh:v2026.239.1624'
+        plan:
+            - # ADE check: deterministic build-context check that the module the host
+              # must build + connect ships (go.mod + provider). The full review loop
+              # (tools -> LLM tool-loop -> verdict -> comment) is exercised by the Go
+              # e2e (e2e_test.go) + the live R10.
+              check: the out-of-tree plugin-review candy ships a buildable Go module (go.mod + provider main) the host can build + connect; the full review engine is exercised by the Go e2e + the live R10
+              id: plugin-review-module-present
+              context:
+                - build
+              command: "test -f go.mod && test -f plugin.go"
