@@ -22,6 +22,11 @@ jobs:
           gofmt -l . | grep -v '^$' && exit 1 || true
           go vet ./...
           go test ./...
+      - name: Install cue (pinned) + params reproducibility
+        run: |
+          go install cuelang.org/go/cmd/cue@v0.16.1
+        env:
+          GOBIN: /usr/local/go/bin
       - name: Generated params are reproducible (cue:gen)
         run: |
           mkdir -p /tmp/cuegen && cp candy/plugin-review/schema/review.cue /tmp/cuegen/
