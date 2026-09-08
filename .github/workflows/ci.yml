@@ -31,7 +31,3 @@ jobs:
           cat candy/plugin-review/schema/review.cue >> /tmp/cuegenpkg/review.cue
           cd /tmp/cuegenpkg && cue exp gengotypes .
           diff <(sed '1,1d' /tmp/cuegenpkg/cue_types_params_gen.go) <(sed '1,1d' "$GITHUB_WORKSPACE/candy/plugin-review/params/cue_types_gen.go")
-          printf 'package params\n' > /tmp/cuegen/review.cue.prefix
-          cat /tmp/cuegen/review.cue.prefix candy/plugin-review/schema/review.cue > /tmp/cuegen/wrapped.cue
-          cd /tmp/cuegen && cue exp gengotypes . -o candygen.go
-          cd $GITHUB_WORKSPACE && diff <(sed '1,2d' /tmp/cuegen/candygen.go) <(sed '1,2d' candy/plugin-review/params/cue_types_gen.go)
