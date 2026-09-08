@@ -27,19 +27,22 @@ const (
 )
 
 type reviewConfig struct {
-	PR         int
-	Repo       string // owner/repo
-	Provider   string
-	Model      string
-	BaseURL    string
-	APIKey     string
-	MaxTurns   int
-	PromptPath string
-	OutPath    string
-	PlanPath   string
-	ServerURL  string
-	RepoEnv    string // GITHUB_REPOSITORY fallback
-	RunID      string
+	PR           int
+	Repo         string // owner/repo
+	Provider     string
+	Model        string
+	BaseURL      string
+	APIKey       string
+	MaxTurns     int
+	PromptPath   string
+	OutPath      string
+	PlanPath     string
+	SystemPrompt string
+	BarePrompt   string
+	Tools        bool
+	ServerURL    string
+	RepoEnv      string // GITHUB_REPOSITORY fallback
+	RunID        string
 }
 
 func (c *reviewConfig) owner() string { return strings.SplitN(c.Repo, "/", 2)[0] }
@@ -65,6 +68,13 @@ func runReview(ctx context.Context, args []string) (int, error) {
 	case "self-test":
 		fmt.Println("plugin-review self-test: ok (command:review resolves)")
 		return 0, nil
+	case "bare", "self-test-bare":
+		if mode == "self-test-bare" || hasFlag(args, "--self-test") {
+			fmt.Printf("bare agent self-test: ok — base_url=%s model=%s key_set=%v system_prompt_len=%d\n",
+				cfg.BaseURL, cfg.Model, cfg.APIKey != "", len(cfg.bareSystemPrompt()))
+			return 0, nil
+		}
+		return runBareAgent(context.Background(), cfg)
 	case "self-test-verdict":
 		return runVerdictSelfTest()
 	case "plan":
@@ -104,6 +114,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	cfg.PromptPath = getenvAny("REVIEW_PROMPT_PATH")
 	cfg.PlanPath = getenvAny("REVIEW_PLAN_PATH")
 	cfg.APIKey = getenvAny("AI_REVIEW_API_KEY")
+	// EVAL_LLM_* (the eval-charly contract) win over AI_REVIEW_* for the bare agent.
+	if v := getenvAny("EVAL_LLM_BASE_URL"); v != "" {
+		cfg.BaseURL = v
+	}
+	if v := getenvAny("EVAL_LLM_MODEL"); v != "" {
+		cfg.Model = v
+	}
+	if v := getenvAny("EVAL_LLM_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
 
 	mode := "review"
 	for i := 0; i < len(args); i++ {
@@ -119,6 +139,20 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 				cfg.PlanPath = args[i+1]
 				i++
 			}
+		case a == "bare":
+			mode = "bare"
+		case a == "--system-prompt":
+			if i+1 < len(args) {
+				cfg.SystemPrompt = args[i+1]
+				i++
+			}
+		case a == "--prompt":
+			if i+1 < len(args) {
+				cfg.BarePrompt = args[i+1]
+				i++
+			}
+		case a == "--tools":
+			cfg.Tools = true
 		case a == "--out" || a == "-o":
 			if i+1 < len(args) {
 				cfg.OutPath = args[i+1]

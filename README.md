@@ -13,6 +13,17 @@ a from-scratch, 1:1 Go port of the retired [pi-review-action](https://github.com
 - **`charly review --plan <path>`** — the runtime orchestration executor: executes a
   declared `review-plan.yml` step list, so ANY runtime plugin can join the review
   workflow purely through config (the workflow YAML stays static).
+- **`charly review bare`** — the BARE AGENT: sends things DIRECTLY to an LLM (no
+  harness, no agent runtime) with a **fully configurable system prompt**
+  (`--system-prompt <text|@file>` / `EVAL_LLM_SYSTEM_PROMPT`, falling back to
+  `REVIEW_PROMPT_PATH`), the endpoint from the eval contract
+  (`EVAL_LLM_BASE_URL/MODEL/API_KEY`, falling back to `AI_REVIEW_*`), a
+  `--prompt <text|@file|-|:pr>` user message, and **all the tools needed to review
+  a PR** via `--tools`: the four read-only verb:pr tools (diff/commits/thread/meta)
+  attached as function tools and driven through the agent loop against
+  `--repo/--pr` (or `GITHUB_REPOSITORY/PR_NUMBER`). With no `--tools` it is a
+  single raw completion — used by the eval-charly judgment stages whose prompts are
+  content files (fully configured in charly.yml).
 
 ## Distribution
 
