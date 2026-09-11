@@ -3,6 +3,7 @@ package pluginreview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,26 +21,28 @@ import (
 // =============================================================================
 
 const (
-	defaultProvider = "openrouter"
-	defaultModel    = "~deepseek/deepseek-v4-flash-latest"
-	defaultBaseURL  = "https://openrouter.ai/api/v1"
-	defaultMaxTurns = 20
+	defaultProvider       = "openrouter"
+	defaultModel          = "~deepseek/deepseek-v4-flash-latest"
+	defaultBaseURL        = "https://openrouter.ai/api/v1"
+	defaultMaxTurns       = 20
+	defaultAttemptTimeout = 5 * time.Minute
 )
 
 type reviewConfig struct {
-	PR         int
-	Repo       string // owner/repo
-	Provider   string
-	Model      string
-	BaseURL    string
-	APIKey     string
-	MaxTurns   int
-	PromptPath string
-	OutPath    string
-	PlanPath   string
-	ServerURL  string
-	RepoEnv    string // GITHUB_REPOSITORY fallback
-	RunID      string
+	PR             int
+	Repo           string // owner/repo
+	Provider       string
+	Model          string
+	BaseURL        string
+	APIKey         string
+	MaxTurns       int
+	PromptPath     string
+	OutPath        string
+	PlanPath       string
+	ServerURL      string
+	RepoEnv        string // GITHUB_REPOSITORY fallback
+	RunID          string
+	AttemptTimeout time.Duration
 }
 
 func (c *reviewConfig) owner() string { return strings.SplitN(c.Repo, "/", 2)[0] }
@@ -77,7 +80,7 @@ func runReview(ctx context.Context, args []string) (int, error) {
 func parseReviewArgs(args []string, environ []string) (reviewConfig, string, error) {
 	cfg := reviewConfig{
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
-		MaxTurns:  defaultMaxTurns,
+		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
 		ServerURL: getenvAny("GITHUB_SERVER_URL"),
 		RepoEnv:   getenvAny("GITHUB_REPOSITORY"),
 		RunID:     getenvAny("GITHUB_RUN_ID"),
@@ -95,6 +98,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	}
 	if v := getenvAny("AI_REVIEW_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := getenvAny("AI_REVIEW_ATTEMPT_TIMEOUT"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.AttemptTimeout = time.Duration(n) * time.Second
+		}
 	}
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
@@ -332,11 +340,15 @@ func readFixture(name string) (string, error) {
 // 5s/10s backoff, verdict-less retry — the action's semantics.
 func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
 	const maxAttempts = 3
+	timedOut := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		fmt.Printf("plugin-review: attempt %d/%d — provider=%s model=%s base_url=%s\n", attempt, maxAttempts, cfg.Provider, cfg.Model, cfg.BaseURL)
 		review, err := agentLoopOnce(ctx, cfg, prompt, tools)
 		if err != nil {
 			fmt.Println("plugin-review: attempt " + fmt.Sprint(attempt) + " failed: " + err.Error())
+			if isTimeoutClass(err) {
+				timedOut++
+			}
 			if attempt < maxAttempts {
 				time.Sleep(time.Duration(attempt) * 5 * time.Second)
 			}
@@ -348,11 +360,26 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 			return review, nil
 		}
 	}
+	if timedOut == maxAttempts {
+		return "", fmt.Errorf("inconclusive: all %d attempts timed out — the LLM provider did not respond within the attempt timeout (provider unanswered); this is NOT a review verdict — re-run the gate", maxAttempts)
+	}
 	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxAttempts)
 }
 
+// isTimeoutClass: an attempt error belongs to the provider-unanswered class
+// (no HTTP response within the client deadline) — distinct from content or
+// review failures, so the exhaustion error can be classified (RCA: the gate
+// conflates a provider latency tail with a genuine review BLOCK).
+func isTimeoutClass(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Client.Timeout exceeded") || strings.Contains(msg, "context deadline exceeded")
+}
+
 func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
-	llm := newLLMClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
+	llm := newLLMClient(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.AttemptTimeout)
 	sys := prompt
 	userMsg := fmt.Sprintf("Review pull request #%d in %s. Current head %s vs base %s. Use the read-only tools to verify the CURRENT state, then produce your review ending in exactly 'Verdict: PASS' or 'Verdict: BLOCK' on the final line.",
 		cfg.PR, cfg.Repo, truncateStr(tools.headSHA, 12), truncateStr(tools.baseSHA, 12))
