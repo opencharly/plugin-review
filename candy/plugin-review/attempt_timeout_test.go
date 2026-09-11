@@ -54,7 +54,7 @@ func TestTimeoutClassExhaustion(t *testing.T) {
 // TestTimeoutClassPositive: a non-timeout error is NOT classified as the
 // timeout class and does not yield the inconclusive marker.
 func TestTimeoutClassPositive(t *testing.T) {
-	if isTimeoutClass(context.DeadlineExceeded) != true {
+	if !isTimeoutClass(context.DeadlineExceeded) {
 		t.Error("context.DeadlineExceeded must classify as the timeout class")
 	}
 	if isTimeoutClass(context.Canceled) {
