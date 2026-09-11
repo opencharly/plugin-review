@@ -69,12 +69,15 @@ type llmClient struct {
 	http    *http.Client
 }
 
-func newLLMClient(baseURL, apiKey, model string) *llmClient {
+func newLLMClient(baseURL, apiKey, model string, timeout time.Duration) *llmClient {
+	if timeout <= 0 {
+		timeout = defaultAttemptTimeout
+	}
 	return &llmClient{
 		baseURL: trimTrailingSlash(baseURL),
 		apiKey:  apiKey,
 		model:   model,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+		http:    &http.Client{Timeout: timeout},
 	}
 }
 
