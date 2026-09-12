@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,6 +199,13 @@ type llmClient struct {
 	http         *http.Client
 	totalTimeout time.Duration // whole turn request: headers through last streamed chunk
 	idleTimeout  time.Duration // maximum silence between streamed chunks
+
+	// sessionID is the per-run session-affinity token. opencode's Go gateway REJECTS a
+	// request without it — HTTP 400 MissingSessionID ("cannot be routed efficiently") —
+	// and the SAME request returns 200 once `x-opencode-session` is present (verified
+	// against the live gateway). One id is minted per review run so every request of
+	// that run shares a session; other providers ignore the header.
+	sessionID string
 }
 
 // newHTTPClient builds the transport EXPLICITLY — the review loop issues a
@@ -242,7 +251,21 @@ func newLLMClient(cfg reviewConfig) *llmClient {
 		http:         newHTTPClient(total),
 		totalTimeout: total,
 		idleTimeout:  idle,
+		sessionID:    newSessionID(),
 	}
+}
+
+// newSessionID mints a per-run session-affinity id (32 lowercase hex chars) with no new
+// dependency — crypto/rand + hex is the whole implementation. A rand failure must not fall
+// back to a CONSTANT id (every concurrent run would share one session, and an empty value
+// would reproduce the very 400 this exists to prevent), so it falls back to a value that is
+// still unique per process and call.
+func newSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("review-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func trimTrailingSlash(s string) string {
@@ -285,6 +308,12 @@ func (c *llmClient) chat(ctx context.Context, messages []chatMsg) (chatMsg, erro
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("HTTP-Referer", "https://github.com/opencharly/action-review")
 	req.Header.Set("X-Title", "action-review")
+	// Session affinity: gateways that demand it (opencode's Go gateway returns HTTP 400
+	// MissingSessionID without it) route on this header; gateways that do not, ignore an
+	// unknown header. Sent unconditionally because the header IS the session identity —
+	// conditioning it on a provider guess would silently reintroduce the 400 on a base
+	// URL the guess misses.
+	req.Header.Set("x-opencode-session", c.sessionID)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
