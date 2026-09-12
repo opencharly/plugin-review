@@ -49,9 +49,10 @@ const (
 	// is the only writer of the conversation, so re-issuing is safe and
 	// deterministic.
 	maxTurnRequestAttempts = 3
-	// maxReviewPasses bounds whole-loop passes, re-run only when a completed pass
-	// produced no Verdict line (a format failure, not a transport failure).
-	maxReviewPasses = 3
+	// defaultMaxAttempts bounds whole-loop passes, re-run only when a completed
+	// pass produced no Verdict line (a format failure, not a transport failure).
+	// Env AI_REVIEW_MAX_ATTEMPTS; 1 = fail hard, no repeat cycle.
+	defaultMaxAttempts = 3
 )
 
 type reviewConfig struct {
@@ -68,6 +69,9 @@ type reviewConfig struct {
 	ServerURL  string
 	RepoEnv    string // GITHUB_REPOSITORY fallback
 	RunID      string
+	// MaxAttempts bounds whole-loop passes (env AI_REVIEW_MAX_ATTEMPTS, default
+	// 3; 1 = fail hard, no repeat cycle).
+	MaxAttempts int
 	// AttemptTimeout bounds ONE turn request as a whole: request headers through
 	// the last streamed chunk (env AI_REVIEW_ATTEMPT_TIMEOUT, seconds).
 	AttemptTimeout time.Duration
@@ -121,6 +125,7 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
 		RetryBackoff: defaultRetryBackoff,
+		MaxAttempts:  defaultMaxAttempts,
 		ServerURL:    getenvAny("GITHUB_SERVER_URL"),
 		RepoEnv:      getenvAny("GITHUB_REPOSITORY"),
 		RunID:        getenvAny("GITHUB_RUN_ID"),
@@ -129,7 +134,7 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		cfg.ServerURL = "https://github.com"
 	}
 
-	// env overrides (AI_REVIEW_*: provider/model/base_url/max_turns; REVIEW_PROMPT_PATH; REVIEW_PLAN_PATH)
+	// env overrides (AI_REVIEW_*: provider/model/base_url/max_turns/max_attempts; REVIEW_PROMPT_PATH; REVIEW_PLAN_PATH)
 	if v := getenvAny("AI_REVIEW_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
@@ -157,6 +162,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
 			cfg.MaxTurns = n
+		}
+	}
+	if v := getenvAny("AI_REVIEW_MAX_ATTEMPTS"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.MaxAttempts = n
 		}
 	}
 	cfg.PromptPath = getenvAny("REVIEW_PROMPT_PATH")
@@ -390,7 +400,8 @@ func readFixture(name string) (string, error) {
 // lives at the layer that actually fails: a FAILED TURN REQUEST is re-issued
 // (chatTurn, up to maxTurnRequestAttempts, same conversation state), and only a
 // COMPLETED pass that produced no Verdict line re-runs the loop
-// (maxReviewPasses). A turn-2 timeout therefore resumes at turn 2 — it never
+// (cfg.MaxAttempts, env AI_REVIEW_MAX_ATTEMPTS, default 3; 1 = fail hard, no
+// repeat cycle). A turn-2 timeout therefore resumes at turn 2 — it never
 // restarts the review from turn 1 (pre-RCA behaviour re-ran the WHOLE loop per
 // attempt, redoing every already-paid turn).
 func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
@@ -398,8 +409,12 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 	if backoff <= 0 {
 		backoff = defaultRetryBackoff
 	}
-	for pass := 1; pass <= maxReviewPasses; pass++ {
-		fmt.Printf("plugin-review: pass %d/%d — provider=%s model=%s base_url=%s\n", pass, maxReviewPasses, cfg.Provider, cfg.Model, cfg.BaseURL)
+	maxPasses := cfg.MaxAttempts
+	if maxPasses < 1 {
+		maxPasses = 1
+	}
+	for pass := 1; pass <= maxPasses; pass++ {
+		fmt.Printf("plugin-review: pass %d/%d — provider=%s model=%s base_url=%s\n", pass, maxPasses, cfg.Provider, cfg.Model, cfg.BaseURL)
 		review, err := agentLoopOnce(ctx, cfg, prompt, tools)
 		if err != nil {
 			fmt.Println("plugin-review: pass " + fmt.Sprint(pass) + " failed: " + err.Error())
@@ -409,7 +424,7 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 			if isTimeoutClass(err) {
 				return "", fmt.Errorf("inconclusive: the LLM provider never answered or stopped streaming and every re-issue of the failing turn timed out (idle bound %v, whole-request bound %v); this is NOT a review verdict — re-run the gate", cfg.StreamIdleTimeout, cfg.AttemptTimeout)
 			}
-			if pass < maxReviewPasses {
+			if pass < maxPasses {
 				if err := sleepCtx(ctx, time.Duration(pass)*backoff); err != nil {
 					return "", err
 				}
@@ -422,13 +437,13 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 		if n > 0 {
 			return review, nil
 		}
-		if pass < maxReviewPasses {
+		if pass < maxPasses {
 			if err := sleepCtx(ctx, time.Duration(pass)*backoff); err != nil {
 				return "", err
 			}
 		}
 	}
-	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxReviewPasses)
+	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxPasses)
 }
 
 // chatTurn issues ONE turn request, re-issuing it on failure with the SAME
