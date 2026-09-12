@@ -61,3 +61,40 @@ func TestTimeoutClassPositive(t *testing.T) {
 		t.Error("context.Canceled must NOT classify as the timeout class")
 	}
 }
+
+// TestMaxAttemptsKnob: AI_REVIEW_MAX_ATTEMPTS overrides the default 3-attempt
+// loop; invalid values fall back. Zero retries (1) fails hard on the first
+// failed attempt instead of cycling.
+func TestMaxAttemptsKnob(t *testing.T) {
+	cfg, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxAttempts != defaultMaxAttempts {
+		t.Errorf("MaxAttempts default: got %d, want %d", cfg.MaxAttempts, defaultMaxAttempts)
+	}
+	t.Setenv("AI_REVIEW_MAX_ATTEMPTS", "1")
+	cfg1, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg1.MaxAttempts != 1 {
+		t.Errorf("MaxAttempts on AI_REVIEW_MAX_ATTEMPTS=1: got %d, want 1", cfg1.MaxAttempts)
+	}
+	t.Setenv("AI_REVIEW_MAX_ATTEMPTS", "bogus")
+	cfg2, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.MaxAttempts != defaultMaxAttempts {
+		t.Errorf("MaxAttempts on invalid value: got %d, want default %d", cfg2.MaxAttempts, defaultMaxAttempts)
+	}
+	t.Setenv("AI_REVIEW_MAX_ATTEMPTS", "0")
+	cfg3, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg3.MaxAttempts != defaultMaxAttempts {
+		t.Errorf("MaxAttempts on 0: got %d, want default %d", cfg3.MaxAttempts, defaultMaxAttempts)
+	}
+}
