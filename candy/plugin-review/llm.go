@@ -194,6 +194,7 @@ type llmClient struct {
 	baseURL      string
 	apiKey       string
 	model        string
+	sessionID    string // stable per review run; sent as x-opencode-session (OpenCode Go requires it)
 	http         *http.Client
 	totalTimeout time.Duration // whole turn request: headers through last streamed chunk
 	idleTimeout  time.Duration // maximum silence between streamed chunks
@@ -235,10 +236,19 @@ func newLLMClient(cfg reviewConfig) *llmClient {
 	if idle <= 0 {
 		idle = defaultStreamIdleTimeout
 	}
+	// x-opencode-session: OpenCode Go REQUIRES a stable per-conversation session
+	// id (400 MissingSessionID otherwise). GITHUB_RUN_ID is stable across every
+	// turn of one review run; fall back to a per-client generated id so a local
+	// run still routes.
+	session := cfg.RunID
+	if session == "" {
+		session = fmt.Sprintf("opencharly-review-%d", time.Now().UnixNano())
+	}
 	return &llmClient{
 		baseURL:      trimTrailingSlash(cfg.BaseURL),
 		apiKey:       cfg.APIKey,
 		model:        cfg.Model,
+		sessionID:    session,
 		http:         newHTTPClient(total),
 		totalTimeout: total,
 		idleTimeout:  idle,
@@ -283,6 +293,8 @@ func (c *llmClient) chat(ctx context.Context, messages []chatMsg) (chatMsg, erro
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("User-Agent", "opencharly-action-review/1.0")
+	req.Header.Set("x-opencode-session", c.sessionID)
 	req.Header.Set("HTTP-Referer", "https://github.com/opencharly/action-review")
 	req.Header.Set("X-Title", "action-review")
 
