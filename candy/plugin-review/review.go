@@ -26,6 +26,7 @@ const (
 	defaultBaseURL        = "https://openrouter.ai/api/v1"
 	defaultMaxTurns       = 20
 	defaultAttemptTimeout = 5 * time.Minute
+	defaultMaxAttempts    = 3
 )
 
 type reviewConfig struct {
@@ -36,6 +37,7 @@ type reviewConfig struct {
 	BaseURL        string
 	APIKey         string
 	MaxTurns       int
+	MaxAttempts    int
 	PromptPath     string
 	OutPath        string
 	PlanPath       string
@@ -81,15 +83,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	cfg := reviewConfig{
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
 		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
-		ServerURL: getenvAny("GITHUB_SERVER_URL"),
-		RepoEnv:   getenvAny("GITHUB_REPOSITORY"),
-		RunID:     getenvAny("GITHUB_RUN_ID"),
+		MaxAttempts: defaultMaxAttempts,
+		ServerURL:   getenvAny("GITHUB_SERVER_URL"),
+		RepoEnv:     getenvAny("GITHUB_REPOSITORY"),
+		RunID:       getenvAny("GITHUB_RUN_ID"),
 	}
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = "https://github.com"
 	}
 
-	// env overrides (AI_REVIEW_*: provider/model/base_url/max_turns; REVIEW_PROMPT_PATH; REVIEW_PLAN_PATH)
+	// env overrides (AI_REVIEW_*: provider/model/base_url/max_turns/max_attempts; REVIEW_PROMPT_PATH; REVIEW_PLAN_PATH)
 	if v := getenvAny("AI_REVIEW_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
@@ -107,6 +110,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
 			cfg.MaxTurns = n
+		}
+	}
+	if v := getenvAny("AI_REVIEW_MAX_ATTEMPTS"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.MaxAttempts = n
 		}
 	}
 	cfg.PromptPath = getenvAny("REVIEW_PROMPT_PATH")
@@ -336,10 +344,15 @@ func readFixture(name string) (string, error) {
 	return string(raw), nil
 }
 
-// runAgentLoop: temperature 0.2, tool_choice auto, max_turns, 3 attempts with
-// 5s/10s backoff, verdict-less retry — the action's semantics.
+// runAgentLoop: temperature 0.2, tool_choice auto, max_turns, up to
+// cfg.MaxAttempts attempts (AI_REVIEW_MAX_ATTEMPTS, default 3) with 5s/10s
+// backoff, verdict-less retry — the action's semantics. A failed first
+// attempt is terminal when MaxAttempts is 1: fail hard, no repeat cycle.
 func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
-	const maxAttempts = 3
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
 	timedOut := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		fmt.Printf("plugin-review: attempt %d/%d — provider=%s model=%s base_url=%s\n", attempt, maxAttempts, cfg.Provider, cfg.Model, cfg.BaseURL)
