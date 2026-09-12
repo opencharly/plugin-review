@@ -142,3 +142,30 @@ func TestMaxAttemptsOneFailsFastLive(t *testing.T) {
 	}
 	t.Logf("live fail-fast proof: requests=%d error=%q", atomic.LoadInt32(&requests), err.Error())
 }
+
+// TestMaxAttemptsZeroClampsToOne: a directly-constructed config with
+// MaxAttempts == 0 (bypassing parseReviewArgs' n>0 guard) still makes exactly
+// ONE provider request — the clamp prevents a zero-iteration loop that would
+// otherwise return a misleading "all 0 attempts failed" error. The request
+// counter is the evidence.
+func TestMaxAttemptsZeroClampsToOne(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		time.Sleep(2 * time.Second)
+	}))
+	defer srv.Close()
+
+	cfg := reviewConfig{
+		Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k",
+		MaxTurns: 3, AttemptTimeout: 50 * time.Millisecond, MaxAttempts: 0,
+	}
+	_, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
+	if err == nil {
+		t.Fatal("expected an error from the clamped single-attempt loop")
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("clamp: got %d provider request(s), want exactly 1", got)
+	}
+	t.Logf("clamp proof: MaxAttempts=0 -> requests=%d", atomic.LoadInt32(&requests))
+}
