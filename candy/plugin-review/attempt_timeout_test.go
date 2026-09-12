@@ -100,17 +100,18 @@ func TestMaxAttemptsKnob(t *testing.T) {
 	}
 }
 
-// TestMaxAttemptsOneFailsFastLive executes the CHANGED runtime path end-to-end:
-// the AI_REVIEW_MAX_ATTEMPTS env is parsed into cfg.MaxAttempts, and runAgentLoop
-// makes exactly ONE provider request before failing hard — no retry cycle. The
-// request counter on the hanging server is the evidence: 3 requests would mean
-// the retries still happen. The emitted error is also checked to carry the gate's
-// INCONCLUSIVE marker verbatim (the exact strings the workflow greps for).
+// TestMaxAttemptsOneFailsFastLive drives the CHANGED whole-loop pass bound: with
+// AI_REVIEW_MAX_ATTEMPTS=1 the loop runs exactly ONE pass, so a verdict-less
+// (but COMPLETED) review is not re-run. The server answers every turn with a
+// valid streamed completion carrying no Verdict line, so one completed pass
+// costs exactly one turn request and the request counter IS the pass counter.
 func TestMaxAttemptsOneFailsFastLive(t *testing.T) {
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		atomic.AddInt32(&requests, 1)
-		time.Sleep(2 * time.Second) // never answers within the 50ms attempt timeout
+		rw.Header().Set("Content-Type", "text/event-stream")
+		writeSSEChunk(rw, `{"choices":[{"delta":{"content":"a review with no verdict line"}}]}`)
+		writeSSEDone(rw)
 	}))
 	defer srv.Close()
 
@@ -123,8 +124,9 @@ func TestMaxAttemptsOneFailsFastLive(t *testing.T) {
 	cfg.Model = "m"
 	cfg.BaseURL = srv.URL
 	cfg.APIKey = "k"
-	cfg.MaxTurns = 3
-	cfg.AttemptTimeout = 50 * time.Millisecond
+	cfg.MaxTurns = 1
+	cfg.AttemptTimeout = 2 * time.Second
+	cfg.RetryBackoff = time.Millisecond
 
 	if cfg.MaxAttempts != 1 {
 		t.Fatalf("env knob did not reach cfg: MaxAttempts=%d, want 1", cfg.MaxAttempts)
@@ -132,40 +134,39 @@ func TestMaxAttemptsOneFailsFastLive(t *testing.T) {
 
 	_, err = runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
 	if err == nil {
-		t.Fatal("expected an error from the single-attempt loop")
+		t.Fatal("expected an error from the single-pass loop (no verdict produced)")
 	}
 	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Errorf("fail-fast: got %d provider request(s), want exactly 1", got)
+		t.Errorf("pass bound: got %d turn request(s) for one pass, want exactly 1", got)
 	}
-	if !strings.Contains(err.Error(), "inconclusive:") || !strings.Contains(err.Error(), "provider unanswered") {
-		t.Errorf("exhaustion error must carry the INCONCLUSIVE marker, got: %v", err)
-	}
-	t.Logf("live fail-fast proof: requests=%d error=%q", atomic.LoadInt32(&requests), err.Error())
+	t.Logf("pass-bound proof: AI_REVIEW_MAX_ATTEMPTS=1 -> requests=%d (one pass)", atomic.LoadInt32(&requests))
 }
 
 // TestMaxAttemptsZeroClampsToOne: a directly-constructed config with
-// MaxAttempts == 0 (bypassing parseReviewArgs' n>0 guard) still makes exactly
-// ONE provider request — the clamp prevents a zero-iteration loop that would
-// otherwise return a misleading "all 0 attempts failed" error. The request
-// counter is the evidence.
+// MaxAttempts == 0 (bypassing parseReviewArgs' n>0 guard) still runs exactly ONE
+// pass — the clamp prevents a zero-iteration loop that would otherwise return a
+// misleading "all 0 attempts failed" error. Verdict-less completed passes make
+// the request count equal the pass count.
 func TestMaxAttemptsZeroClampsToOne(t *testing.T) {
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		atomic.AddInt32(&requests, 1)
-		time.Sleep(2 * time.Second)
+		rw.Header().Set("Content-Type", "text/event-stream")
+		writeSSEChunk(rw, `{"choices":[{"delta":{"content":"no verdict"}}]}`)
+		writeSSEDone(rw)
 	}))
 	defer srv.Close()
 
 	cfg := reviewConfig{
 		Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 3, AttemptTimeout: 50 * time.Millisecond, MaxAttempts: 0,
+		MaxTurns: 1, AttemptTimeout: 2 * time.Second, MaxAttempts: 0,
 	}
 	_, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
 	if err == nil {
-		t.Fatal("expected an error from the clamped single-attempt loop")
+		t.Fatal("expected an error from the clamped single-pass loop")
 	}
 	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Errorf("clamp: got %d provider request(s), want exactly 1", got)
+		t.Errorf("clamp: got %d turn request(s), want exactly 1", got)
 	}
 	t.Logf("clamp proof: MaxAttempts=0 -> requests=%d", atomic.LoadInt32(&requests))
 }

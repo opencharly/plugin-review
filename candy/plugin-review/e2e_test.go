@@ -25,7 +25,8 @@ func TestReviewE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// local chat-completions server: one tool-call turn, then the final PASS verdict
+	// local chat-completions server: STREAMING (SSE) — turn 1 returns one tool
+	// call, turn 2 the final PASS verdict. This is the production request shape.
 	calls := 0
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		calls++
@@ -39,36 +40,16 @@ func TestReviewE2E(t *testing.T) {
 		if cr.Temperature != 0.2 || len(cr.Tools) != 4 || cr.ToolChoice != "auto" {
 			t.Errorf("unexpected loop shape: temp=%v tools=%d choice=%q", cr.Temperature, len(cr.Tools), cr.ToolChoice)
 		}
-		var resp chatResponse
-		if calls == 1 {
-			resp = chatResponse{Choices: []struct {
-				Message struct {
-					Content   *string    `json:"content"`
-					ToolCalls []toolCall `json:"tool_calls"`
-				} `json:"message"`
-			}{{Message: struct {
-				Content   *string    `json:"content"`
-				ToolCalls []toolCall `json:"tool_calls"`
-			}{
-				ToolCalls: []toolCall{{ID: "call_1", Type: "function", Function: struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				}{Name: "get_pr_meta", Arguments: "{}"}}},
-			}}}}
-		} else {
-			c := "## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"
-			resp = chatResponse{Choices: []struct {
-				Message struct {
-					Content   *string    `json:"content"`
-					ToolCalls []toolCall `json:"tool_calls"`
-				} `json:"message"`
-			}{{Message: struct {
-				Content   *string    `json:"content"`
-				ToolCalls []toolCall `json:"tool_calls"`
-			}{Content: &c}}}}
+		if !cr.Stream {
+			t.Error("the review engine must request a streamed completion")
 		}
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(resp)
+		rw.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			writeSSEChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
+		} else {
+			writeSSEChunk(rw, `{"choices":[{"delta":{"content":"## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"}}]}`)
+		}
+		writeSSEDone(rw)
 	}))
 	defer llmSrv.Close()
 
