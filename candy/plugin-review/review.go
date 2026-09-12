@@ -21,28 +21,66 @@ import (
 // =============================================================================
 
 const (
-	defaultProvider       = "openrouter"
-	defaultModel          = "~deepseek/deepseek-v4-flash-latest"
-	defaultBaseURL        = "https://openrouter.ai/api/v1"
-	defaultMaxTurns       = 20
-	defaultAttemptTimeout = 5 * time.Minute
+	defaultProvider = "openrouter"
+	defaultModel    = "~deepseek/deepseek-v4-flash-latest"
+	defaultBaseURL  = "https://openrouter.ai/api/v1"
+	defaultMaxTurns = 20
+	// defaultAttemptTimeout bounds ONE turn request as a whole (request headers
+	// through the last streamed chunk). It was 5m covering a NON-streaming whole
+	// generation, so the large tool-result turn 2 had to finish inside a single
+	// wall clock and died with "awaiting headers" (RCA: review timeouts).
+	// Streaming moved the real bound to defaultStreamIdleTimeout; this stays as
+	// the generous outer cap.
+	defaultAttemptTimeout = 15 * time.Minute
+	// defaultStreamIdleTimeout is the maximum SILENCE inside a streamed
+	// completion — the gap between chunks, including the wait for the first one
+	// (prompt processing of a large tool-result context). A live generation may
+	// run far longer than this; a dead one is cut here.
+	defaultStreamIdleTimeout = 3 * time.Minute
+	// defaultToolResultMaxBytes caps ONE tool result appended to the
+	// conversation. Tool output is the context-growth trigger: get_pr_diff is up
+	// to 96 KiB and get_pr_thread up to 100 comments x 24 KiB.
+	defaultToolResultMaxBytes = 64 << 10
+	// defaultRetryBackoff is the base backoff between re-issues of a FAILED TURN
+	// request (attempt x base = 5s then 10s — the action's original schedule).
+	defaultRetryBackoff = 5 * time.Second
+	// maxTurnRequestAttempts bounds the re-issues of a SINGLE failed turn request
+	// (never of the whole loop). Every review tool is a read-only GET and the loop
+	// is the only writer of the conversation, so re-issuing is safe and
+	// deterministic.
+	maxTurnRequestAttempts = 3
+	// maxReviewPasses bounds whole-loop passes, re-run only when a completed pass
+	// produced no Verdict line (a format failure, not a transport failure).
+	maxReviewPasses = 3
 )
 
 type reviewConfig struct {
-	PR             int
-	Repo           string // owner/repo
-	Provider       string
-	Model          string
-	BaseURL        string
-	APIKey         string
-	MaxTurns       int
-	PromptPath     string
-	OutPath        string
-	PlanPath       string
-	ServerURL      string
-	RepoEnv        string // GITHUB_REPOSITORY fallback
-	RunID          string
+	PR         int
+	Repo       string // owner/repo
+	Provider   string
+	Model      string
+	BaseURL    string
+	APIKey     string
+	MaxTurns   int
+	PromptPath string
+	OutPath    string
+	PlanPath   string
+	ServerURL  string
+	RepoEnv    string // GITHUB_REPOSITORY fallback
+	RunID      string
+	// AttemptTimeout bounds ONE turn request as a whole: request headers through
+	// the last streamed chunk (env AI_REVIEW_ATTEMPT_TIMEOUT, seconds).
 	AttemptTimeout time.Duration
+	// StreamIdleTimeout bounds SILENCE inside a streamed completion (env
+	// AI_REVIEW_STREAM_IDLE_TIMEOUT, seconds).
+	StreamIdleTimeout time.Duration
+	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
+	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
+	ToolResultMaxBytes int
+	// RetryBackoff is the base backoff between re-issues of a failed turn
+	// request. Not env-configurable: it is a scheduling constant, not a policy
+	// knob (tests set it directly).
+	RetryBackoff time.Duration
 }
 
 func (c *reviewConfig) owner() string { return strings.SplitN(c.Repo, "/", 2)[0] }
@@ -81,9 +119,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	cfg := reviewConfig{
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
 		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
-		ServerURL: getenvAny("GITHUB_SERVER_URL"),
-		RepoEnv:   getenvAny("GITHUB_REPOSITORY"),
-		RunID:     getenvAny("GITHUB_RUN_ID"),
+		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
+		RetryBackoff: defaultRetryBackoff,
+		ServerURL:    getenvAny("GITHUB_SERVER_URL"),
+		RepoEnv:      getenvAny("GITHUB_REPOSITORY"),
+		RunID:        getenvAny("GITHUB_RUN_ID"),
 	}
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = "https://github.com"
@@ -102,6 +142,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	if v := getenvAny("AI_REVIEW_ATTEMPT_TIMEOUT"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
 			cfg.AttemptTimeout = time.Duration(n) * time.Second
+		}
+	}
+	if v := getenvAny("AI_REVIEW_STREAM_IDLE_TIMEOUT"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.StreamIdleTimeout = time.Duration(n) * time.Second
+		}
+	}
+	if v := getenvAny("AI_REVIEW_TOOL_RESULT_MAX_BYTES"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.ToolResultMaxBytes = n
 		}
 	}
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
@@ -336,57 +386,119 @@ func readFixture(name string) (string, error) {
 	return string(raw), nil
 }
 
-// runAgentLoop: temperature 0.2, tool_choice auto, max_turns, 3 attempts with
-// 5s/10s backoff, verdict-less retry — the action's semantics.
+// runAgentLoop: temperature 0.2, tool_choice auto, max_turns. The retry policy
+// lives at the layer that actually fails: a FAILED TURN REQUEST is re-issued
+// (chatTurn, up to maxTurnRequestAttempts, same conversation state), and only a
+// COMPLETED pass that produced no Verdict line re-runs the loop
+// (maxReviewPasses). A turn-2 timeout therefore resumes at turn 2 — it never
+// restarts the review from turn 1 (pre-RCA behaviour re-ran the WHOLE loop per
+// attempt, redoing every already-paid turn).
 func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
-	const maxAttempts = 3
-	timedOut := 0
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		fmt.Printf("plugin-review: attempt %d/%d — provider=%s model=%s base_url=%s\n", attempt, maxAttempts, cfg.Provider, cfg.Model, cfg.BaseURL)
+	backoff := cfg.RetryBackoff
+	if backoff <= 0 {
+		backoff = defaultRetryBackoff
+	}
+	for pass := 1; pass <= maxReviewPasses; pass++ {
+		fmt.Printf("plugin-review: pass %d/%d — provider=%s model=%s base_url=%s\n", pass, maxReviewPasses, cfg.Provider, cfg.Model, cfg.BaseURL)
 		review, err := agentLoopOnce(ctx, cfg, prompt, tools)
 		if err != nil {
-			fmt.Println("plugin-review: attempt " + fmt.Sprint(attempt) + " failed: " + err.Error())
+			fmt.Println("plugin-review: pass " + fmt.Sprint(pass) + " failed: " + err.Error())
+			// A transport failure is NOT a reason to re-run the whole loop: every
+			// turn request already carries its own re-issues. Report the distinct
+			// inconclusive class instead (the gate must never read it as a BLOCK).
 			if isTimeoutClass(err) {
-				timedOut++
+				return "", fmt.Errorf("inconclusive: the LLM provider never answered or stopped streaming and every re-issue of the failing turn timed out (idle bound %v, whole-request bound %v); this is NOT a review verdict — re-run the gate", cfg.StreamIdleTimeout, cfg.AttemptTimeout)
 			}
-			if attempt < maxAttempts {
-				time.Sleep(time.Duration(attempt) * 5 * time.Second)
+			if pass < maxReviewPasses {
+				if err := sleepCtx(ctx, time.Duration(pass)*backoff); err != nil {
+					return "", err
+				}
+				continue
 			}
-			continue
+			return "", err
 		}
 		_, distinct, n := extractVerdict(review)
-		fmt.Printf("plugin-review: attempt %d review_len=%d verdict_lines=%d distinct=%v\n", attempt, len(review), n, distinct)
+		fmt.Printf("plugin-review: pass %d review_len=%d verdict_lines=%d distinct=%v\n", pass, len(review), n, distinct)
 		if n > 0 {
 			return review, nil
 		}
+		if pass < maxReviewPasses {
+			if err := sleepCtx(ctx, time.Duration(pass)*backoff); err != nil {
+				return "", err
+			}
+		}
 	}
-	if timedOut == maxAttempts {
-		return "", fmt.Errorf("inconclusive: all %d attempts timed out — the LLM provider did not respond within the attempt timeout (provider unanswered); this is NOT a review verdict — re-run the gate", maxAttempts)
-	}
-	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxAttempts)
+	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxReviewPasses)
 }
 
-// isTimeoutClass: an attempt error belongs to the provider-unanswered class
-// (no HTTP response within the client deadline) — distinct from content or
-// review failures, so the exhaustion error can be classified (RCA: the gate
-// conflates a provider latency tail with a genuine review BLOCK).
+// chatTurn issues ONE turn request, re-issuing it on failure with the SAME
+// conversation state. Re-issuing is safe and deterministic: all four review
+// tools are read-only gh-api GETs (get_pr_diff / get_pr_commits / get_pr_thread
+// / get_pr_meta) and the loop is the only writer of `messages`, so a retried
+// turn cannot duplicate a side effect or lose accumulated context.
+func chatTurn(ctx context.Context, cfg reviewConfig, llm *llmClient, messages []chatMsg) (chatMsg, error) {
+	backoff := cfg.RetryBackoff
+	if backoff <= 0 {
+		backoff = defaultRetryBackoff
+	}
+	var lastErr error
+	for attempt := 1; attempt <= maxTurnRequestAttempts; attempt++ {
+		msg, err := llm.chat(ctx, messages)
+		if err == nil {
+			return msg, nil
+		}
+		lastErr = err
+		fmt.Printf("plugin-review: turn request attempt %d/%d failed: %v\n", attempt, maxTurnRequestAttempts, err)
+		if attempt < maxTurnRequestAttempts {
+			if err := sleepCtx(ctx, time.Duration(attempt)*backoff); err != nil {
+				return chatMsg{}, lastErr
+			}
+		}
+	}
+	return chatMsg{}, lastErr
+}
+
+// sleepCtx waits for d but abandons the wait as soon as ctx is done, so a
+// cancelled run (or an expired outer deadline) is never held by a backoff.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// isTimeoutClass: an attempt error belongs to the provider-unanswered class —
+// no response within the whole-request deadline, no chunk within the idle
+// deadline, or a peer that never wrote response headers. It is distinct from
+// content or review failures, so the exhaustion error can be classified
+// (RCA: the gate conflates a provider latency tail with a genuine review BLOCK).
 func isTimeoutClass(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "Client.Timeout exceeded") || strings.Contains(msg, "context deadline exceeded")
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "Client.Timeout exceeded") ||
+		strings.Contains(msg, "timeout awaiting response headers") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
-	llm := newLLMClient(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.AttemptTimeout)
+	llm := newLLMClient(cfg)
 	sys := prompt
 	userMsg := fmt.Sprintf("Review pull request #%d in %s. Current head %s vs base %s. Use the read-only tools to verify the CURRENT state, then produce your review ending in exactly 'Verdict: PASS' or 'Verdict: BLOCK' on the final line.",
 		cfg.PR, cfg.Repo, truncateStr(tools.headSHA, 12), truncateStr(tools.baseSHA, 12))
 	messages := []chatMsg{{Role: "system", Content: &sys}, {Role: "user", Content: &userMsg}}
 
 	for turn := 0; turn < cfg.MaxTurns; turn++ {
-		msg, err := llm.chat(ctx, messages)
+		msg, err := chatTurn(ctx, cfg, llm, messages)
 		if err != nil {
 			return "", err
 		}
@@ -406,7 +518,10 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 			if err != nil {
 				out = "{\"error\": " + jsonQuote(err.Error()) + "}"
 			}
-			c := out
+			// Bound the payload the model will see on the NEXT turn: tool output is
+			// the context-growth trigger, and unbounded growth is what pushed the
+			// non-streaming turn-2 request past the whole-response deadline.
+			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
 			messages = append(messages, chatMsg{Role: "tool", ToolCallID: tc.ID, Content: &c})
 		}
 	}
