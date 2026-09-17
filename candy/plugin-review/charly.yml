@@ -31,3 +31,43 @@ plugin-review:
               context:
                 - build
               command: "test -f go.mod && test -f plugin.go"
+
+review-skill:
+    skill:
+        name: review
+        family: review
+        owner: plugin-review
+        description: |-
+            The `charly review` read-only GitHub PR review engine — the chat-completions review
+            loop, verb:pr tools, a deterministic Verdict: PASS|BLOCK. Use to review a PR or run a
+            declared review plan.
+        triggers:
+            - "`charly review` / review a PR / PR verdict / review plan"
+        content: |
+            # charly review — read-only GitHub PR review
+
+            `charly review` is OpenCharly's gate reviewer. Served by `candy/plugin-review`
+            (`command:review`, out-of-process over gRPC).
+
+            ## What it provides
+
+            - the deterministic `verb:pr` tools — `pr_diff`, `pr_commits`, `pr_thread`, `pr_meta`;
+            - `command:review` — the same chat-completions agent loop the retired
+              `pi-review-action` ran: four read-only GitHub tools, a deterministic
+              `Verdict: PASS|BLOCK` line, ONE PR comment, and `$GITHUB_OUTPUT` compatibility
+              (`response`/`success`/`verdict`);
+            - the runtime orchestration executor (`charly review --plan <path>`) that turns a
+              declared `review-plan.yml` into a step pipeline, so any runtime plugin can join the
+              review workflow purely through config.
+
+            The review rulebook is a 1:1 port of `pi-review-action`'s `prompt.txt`, resolved at
+            run time via `REVIEW_PROMPT_PATH` (instructions come from `main`, never the PR).
+
+            ## When to use it
+
+            To review a PR (the `charly/pr-validator` gate) or to author a custom review plan.
+
+            ## Cross-References
+
+            - `/charly-internals:git-workflow` — the PR-only landing + validator gate.
+            - `/charly-pipeline:pipeline` — the runtime the plan executor builds on.
