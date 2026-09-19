@@ -276,12 +276,16 @@ func prFromEventPath(p string) int {
 // the core engine (B1–B6 of the plan) — gather → LLM tool-loop → verdict → comment
 // =============================================================================
 
-func runCoreReview(ctx context.Context, cfg reviewConfig) (int, error) {
+// runReviewEngine runs the read-only tool loop and returns the review text. It
+// has NO side effects (no PR comment, no $GITHUB_OUTPUT write) — emitting those
+// is the caller's single job, so the standalone `charly review pr N` path and the
+// `--plan` path can share ONE engine and still fire each effect exactly once.
+func runReviewEngine(ctx context.Context, cfg reviewConfig) (string, error) {
 	if cfg.PR == 0 {
-		return 2, fmt.Errorf("no pull request context: pass a PR number (charly review pr <N>), the PR_NUMBER env var, or run under a pull_request event")
+		return "", fmt.Errorf("no pull request context: pass a PR number (charly review pr <N>), the PR_NUMBER env var, or run under a pull_request event")
 	}
 	if cfg.Repo == "" {
-		return 2, fmt.Errorf("no repository context: pass --repo owner/repo or set GITHUB_REPOSITORY")
+		return "", fmt.Errorf("no repository context: pass --repo owner/repo or set GITHUB_REPOSITORY")
 	}
 	prompt := loadPrompt(cfg.PromptPath)
 
@@ -291,28 +295,41 @@ func runCoreReview(ctx context.Context, cfg reviewConfig) (int, error) {
 	if m, err := gh.toolMeta(ctx, cfg.owner(), cfg.repo(), cfg.PR); err == nil {
 		headSHA, baseSHA = m.HeadSHA, m.BaseSHA
 	}
-
 	deps := toolSet{gh: gh, owner: cfg.owner(), repo: cfg.repo(), pr: cfg.PR, headSHA: headSHA, baseSHA: baseSHA}
+	return runAgentLoop(ctx, cfg, prompt, deps)
+}
 
-	review, err := runAgentLoop(ctx, cfg, prompt, deps)
+// emitReviewEffects is the ONE place a review result reaches the outside world:
+// $GITHUB_OUTPUT (response/success/verdict), the --out file, and ONE PR comment.
+// Both the standalone path (via runCoreReview) and the plan path (via runPlan)
+// call it exactly once per run — never twice.
+func emitReviewEffects(ctx context.Context, cfg reviewConfig, body string) error {
+	_, distinct, n := extractVerdict(body)
+	if n > 0 && len(distinct) != 1 {
+		return fmt.Errorf("ambiguous verdict: multiple distinct Verdict lines: %v", distinct)
+	}
+	writeGHOutputs(body, n > 0 && len(distinct) == 1, distinct)
+	fmt.Println("plugin-review: verdict_lines=" + fmt.Sprint(n) + " distinct=" + fmt.Sprint(distinct))
+	if cfg.OutPath != "" {
+		_ = os.WriteFile(cfg.OutPath, []byte(body), 0o644)
+	}
+	if cfg.PR != 0 && cfg.Repo != "" {
+		runURL := cfg.ServerURL + "/" + cfg.RepoEnv + "/actions/runs/" + cfg.RunID
+		footer := fmt.Sprintf("\n\n---\n%s/%s — action-review.\n\n[View action run](%s)", cfg.Provider, cfg.Model, runURL)
+		if err := newGHClient().postComment(ctx, cfg.owner(), cfg.repo(), cfg.PR, body+footer); err != nil {
+			fmt.Println("plugin-review: comment post failed (non-fatal): " + err.Error())
+		}
+	}
+	return nil
+}
+
+func runCoreReview(ctx context.Context, cfg reviewConfig) (int, error) {
+	review, err := runReviewEngine(ctx, cfg)
 	if err != nil {
 		return 1, err
 	}
-	_, distinct, n := extractVerdict(review)
-	out := []string{review}
-	if cfg.OutPath != "" {
-		_ = os.WriteFile(cfg.OutPath, []byte(review), 0o644)
-	}
-	writeGHOutputs(review, n > 0 && len(distinct) == 1, distinct)
-	fmt.Println("plugin-review: verdict_lines=" + fmt.Sprint(n) + " distinct=" + fmt.Sprint(distinct))
-	if n > 0 && len(distinct) != 1 {
-		return 2, fmt.Errorf("ambiguous verdict: multiple distinct Verdict lines: %v", distinct)
-	}
-	// ONE best-effort comment with a run footer (never fails the run)
-	runURL := cfg.ServerURL + "/" + cfg.RepoEnv + "/actions/runs/" + cfg.RunID
-	footer := fmt.Sprintf("\n\n---\n%s/%s — action-review.\n\n[View action run](%s)", cfg.Provider, cfg.Model, runURL)
-	if err := gh.postComment(ctx, cfg.owner(), cfg.repo(), cfg.PR, strings.Join(out, "")+footer); err != nil {
-		fmt.Println("plugin-review: comment post failed (non-fatal): " + err.Error())
+	if err := emitReviewEffects(ctx, cfg, review); err != nil {
+		return 2, err
 	}
 	return 0, nil
 }
