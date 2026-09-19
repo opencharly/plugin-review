@@ -82,8 +82,8 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 			Tool_choice: "auto",
 		},
 	}
-	if sid := reviewSessionID(); sid != "" {
-		c.Headers = map[string]string{"x-opencode-session": sid}
+	if cfg.SessionID != "" {
+		c.Headers = map[string]string{"x-opencode-session": cfg.SessionID}
 	}
 	return c.Normalize()
 }

@@ -352,7 +352,8 @@ func TestSessionHeaderSentAndStablePerRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	cfg := reviewConfig{Provider: "opencode", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 1, StreamIdleTimeout: 2 * time.Second, RetryBackoff: time.Millisecond}
+		MaxTurns: 1, StreamIdleTimeout: 2 * time.Second, RetryBackoff: time.Millisecond,
+		SessionID: newSessionID()}
 	_, _ = runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
 	mu.Lock()
 	defer mu.Unlock()
@@ -376,9 +377,31 @@ func TestSessionHeaderSentAndStablePerRun(t *testing.T) {
 // the header for a non-opencode gateway.
 func TestSessionAffinityDisabled(t *testing.T) {
 	t.Setenv("AI_REVIEW_SESSION_ID", "")
-	cfg := llmConfig(reviewConfig{BaseURL: "http://x", Model: "m"})
-	if _, ok := cfg.Headers["x-opencode-session"]; ok {
-		t.Error("AI_REVIEW_SESSION_ID=\"\" must suppress the session-affinity header")
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.SessionID != "" {
+		t.Fatalf("AI_REVIEW_SESSION_ID=\"\" must mint no session id, got %q", rc.SessionID)
+	}
+	if _, ok := llmConfig(rc).Headers["x-opencode-session"]; ok {
+		t.Error("an empty SessionID must suppress the session-affinity header")
+	}
+}
+
+// TestSessionIDStableAcrossPasses: the session id is minted ONCE per run, so
+// every pass/turn of a multi-pass run carries the SAME value.
+func TestSessionIDStableAcrossPasses(t *testing.T) {
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.SessionID == "" {
+		t.Fatal("a normal run must mint a session id")
+	}
+	if a, b := llmConfig(rc), llmConfig(rc); a.Headers["x-opencode-session"] != b.Headers["x-opencode-session"] {
+		t.Errorf("llmConfig minted different session ids across calls: %q vs %q",
+			a.Headers["x-opencode-session"], b.Headers["x-opencode-session"])
 	}
 }
 

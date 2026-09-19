@@ -85,6 +85,10 @@ type reviewConfig struct {
 	// request. Not env-configurable: it is a scheduling constant, not a policy
 	// knob (tests set it directly).
 	RetryBackoff time.Duration
+	// SessionID is the review RUN's session-affinity token: one id per run, shared
+	// by every pass and every turn (a per-request id would defeat the routing it
+	// exists for). Minted once in parseReviewArgs; empty disables the header.
+	SessionID string
 }
 
 func (c *reviewConfig) owner() string { return strings.SplitN(c.Repo, "/", 2)[0] }
@@ -126,6 +130,7 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
 		RetryBackoff: defaultRetryBackoff,
 		MaxAttempts:  defaultMaxAttempts,
+		SessionID:    reviewSessionID(),
 		ServerURL:    getenvAny("GITHUB_SERVER_URL"),
 		RepoEnv:      getenvAny("GITHUB_REPOSITORY"),
 		RunID:        getenvAny("GITHUB_RUN_ID"),
