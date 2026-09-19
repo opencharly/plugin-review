@@ -120,20 +120,75 @@ func parseIssueBody(raw string) string {
 	return i.Body
 }
 
-func parseComments(raw string) []prComment {
+// commentPreviewBytes is how much of a comment body the INDEX carries. The index
+// must stay small enough to be delivered complete in ONE tool message, so it
+// carries per-comment METADATA + a short preview — never the bodies.
+const commentPreviewBytes = 200
+
+// parseCommentIndex parses the comments endpoint into the compact INDEX the
+// thread tool returns: one row per comment with its id, author, date, byte size
+// and a short preview. It never carries a full body, so the index is O(#comments)
+// and can never be truncated — this is what fixes the aggregate-blob RCA (see
+// truncateToolResult). The model reads a body by calling get_pr_comment with the
+// row's id, which returns THAT comment as its own bounded message.
+func parseCommentIndex(raw string) []commentMeta {
 	var cs []rawComment
 	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
 		return nil
 	}
-	out := make([]prComment, 0, len(cs))
+	out := make([]commentMeta, 0, len(cs))
 	for _, c := range cs {
 		author := "unknown"
 		if c.User.Login != "" {
 			author = c.User.Login
 		}
-		out = append(out, prComment{ID: c.ID, Author: author, CreatedAt: c.CreatedAt, Body: truncateStr(c.Body, 24*1024)})
+		out = append(out, commentMeta{
+			ID: c.ID, Author: author, CreatedAt: c.CreatedAt,
+			Bytes: len(c.Body), Preview: firstLine(c.Body, commentPreviewBytes),
+		})
 	}
 	return out
+}
+
+// parseOneComment renders a SINGLE fetched comment as a self-contained JSON
+// object (id + author + date + FULL body). This is the unit that travels as one
+// tool message, so it is bounded exactly once, by truncateToolResult, at the
+// per-message cap — never as part of a larger aggregate.
+func parseOneComment(raw string) (json.RawMessage, error) {
+	var c rawComment
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, err
+	}
+	author := "unknown"
+	if c.User.Login != "" {
+		author = c.User.Login
+	}
+	return json.Marshal(oneComment{ID: c.ID, Author: author, CreatedAt: c.CreatedAt, Body: c.Body})
+}
+
+// oneComment is the shape a single fetched comment is delivered in.
+type oneComment struct {
+	ID        int    `json:"id"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Body      string `json:"body"`
+}
+
+// firstLine returns at most max BYTES of s, collapsed to a single line (so a
+// multi-line body yields a deterministic one-line preview), with a trailing
+// ellipsis when the preview is shorter than the body.
+func firstLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) <= max {
+		return s
+	}
+	b := []byte(s)[:max]
+	for len(b) > 0 && !utf8Valid(b) {
+		b = b[:len(b)-1]
+	}
+	return string(b) + "…"
 }
 
 type rawPull struct {

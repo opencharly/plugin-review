@@ -338,7 +338,8 @@ func runReviewEngine(ctx context.Context, cfg reviewConfig) (string, error) {
 	if m, err := gh.toolMeta(ctx, cfg.owner(), cfg.repo(), cfg.PR); err == nil {
 		headSHA, baseSHA = m.HeadSHA, m.BaseSHA
 	}
-	deps := toolSet{gh: gh, owner: cfg.owner(), repo: cfg.repo(), pr: cfg.PR, headSHA: headSHA, baseSHA: baseSHA}
+	deps := toolSet{gh: gh, owner: cfg.owner(), repo: cfg.repo(), pr: cfg.PR, headSHA: headSHA, baseSHA: baseSHA,
+		toolResultMaxBytes: cfg.ToolResultMaxBytes}
 	return runAgentLoop(ctx, cfg, prompt, deps)
 }
 
@@ -392,7 +393,7 @@ func loadPrompt(path string) string {
 	return "You are the PR validator. Review the PR and emit exactly one final line: Verdict: PASS or Verdict: BLOCK."
 }
 
-// toolSet wires the four tools to the gh client + fixtures.
+// toolSet wires the read-only tools to the gh client + fixtures.
 type toolSet struct {
 	gh      *ghClient
 	owner   string
@@ -401,9 +402,22 @@ type toolSet struct {
 	headSHA string
 	baseSHA string
 	fixture string // non-empty → offline mode
+	// toolResultMaxBytes is the per-message cap the thread tool reports as its
+	// per-comment budget (so the model knows how much of a large comment
+	// get_pr_comment will return). Zero → the engine default.
+	toolResultMaxBytes int
 }
 
-func (t *toolSet) call(ctx context.Context, name string) (string, error) {
+// commentArgs is the parsed argument object for get_pr_comment.
+type commentArgs struct {
+	ID int `json:"id"`
+}
+
+// call dispatches one tool by name. args is the raw tool-call argument JSON
+// (empty / "{}" for the zero-arg reads); only get_pr_comment consumes it, and a
+// missing or non-positive id is a clear tool error rather than a silent
+// whole-thread fetch.
+func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 	fx := ""
 	if t.fixture != "" {
 		fx = filepath.Join("fixtures", t.fixture+"-"+name+".json")
@@ -424,16 +438,46 @@ func (t *toolSet) call(ctx context.Context, name string) (string, error) {
 		}
 		b, _ := json.Marshal(cs)
 		return string(b), nil
+	case "get_pr_body":
+		if fx != "" {
+			return readFixture(fx)
+		}
+		bd, err := t.gh.toolBody(ctx, t.owner, t.repo, t.pr)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.Marshal(bd)
+		return string(b), nil
 	case "get_pr_thread":
 		if fx != "" {
 			return readFixture(fx)
 		}
-		th, err := t.gh.toolThread(ctx, t.owner, t.repo, t.pr, t.headSHA, t.baseSHA)
+		th, err := t.gh.toolThread(ctx, t.owner, t.repo, t.pr, t.headSHA, t.baseSHA, t.toolResultMaxBytes)
 		if err != nil {
 			return "", err
 		}
 		b, _ := json.Marshal(th)
 		return string(b), nil
+	case "get_pr_comment":
+		// Argument validation comes FIRST, before the fixture shortcut: a missing
+		// or non-positive id is a tool error in every mode, never a silent fetch.
+		var a commentArgs
+		if strings.TrimSpace(args) != "" {
+			if err := json.Unmarshal([]byte(args), &a); err != nil {
+				return "", fmt.Errorf("get_pr_comment: invalid arguments %q: %w", args, err)
+			}
+		}
+		if a.ID <= 0 {
+			return "", fmt.Errorf("get_pr_comment: a positive comment id is required (read get_pr_thread's comments[] index); got %d", a.ID)
+		}
+		if fx != "" {
+			return readFixture(fx)
+		}
+		raw, err := t.gh.toolComment(ctx, t.owner, t.repo, a.ID)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
 	case "get_pr_meta":
 		if fx != "" {
 			return readFixture(fx)
@@ -591,13 +635,15 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 		}
 		fmt.Printf("plugin-review: turn %d: %d tool call(s)\n", turn+1, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
-			out, err := tools.call(ctx, tc.Name)
+			out, err := tools.call(ctx, tc.Name, tc.Arguments)
 			if err != nil {
 				out = "{\"error\": " + jsonQuote(err.Error()) + "}"
 			}
-			// Bound the payload the model will see on the NEXT turn: tool output is
-			// the context-growth trigger, and unbounded growth is what bloated the
-			// review context before this cutover.
+			// Each tool result is its OWN tool message and is bounded EXACTLY ONCE
+			// here, at the per-message cap: get_pr_thread now returns a compact
+			// index (not the aggregate bodies) and get_pr_comment returns one
+			// comment, so no single message can lose its tail to a cap — the RCA
+			// that made the trailing review round and sign-off invisible.
 			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
 			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(c)})
 		}

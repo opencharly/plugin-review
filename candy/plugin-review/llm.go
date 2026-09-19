@@ -33,24 +33,42 @@ import (
 type reviewToolSpec struct {
 	name        string
 	description string
+	// params is the JSON-Schema argument object (nil = a zero-arg read). Only
+	// get_pr_comment takes an argument (the comment id from the thread index).
+	params map[string]any
 }
 
-// reviewTools is the SINGLE declaration of the four read-only PR tools the review
+// reviewTools is the SINGLE declaration of the read-only PR tools the review
 // loop exposes. The descriptions are the model-facing contract (they tell the
 // model WHEN to call each tool), so they live with the tool, not in the loop.
+//
+// THREAD DELIVERY (RCA: the 64 KiB aggregate cap): get_pr_thread returns the
+// current body + a compact comment INDEX (ids, authors, dates, sizes, short
+// previews) — NEVER the aggregate bodies. The model reads a comment by calling
+// get_pr_comment with the id from the index. This keeps every tool result small
+// enough to be delivered complete: the index is O(#comments) metadata, and each
+// comment body travels as its own message, bounded once at the per-message cap.
 var reviewTools = []reviewToolSpec{
-	{name: "get_pr_diff", description: "CURRENT unified diff (head vs base)."},
+	{name: "get_pr_meta", description: "PR metadata: title, state, mergeable, head/base sha, file counts. Call this FIRST."},
+	{name: "get_pr_body", description: "The CURRENT live PR/issue body as its own message — authoritative; it supersedes anything an older comment said. Read as a single unit, never bundled with the comments."},
+	{name: "get_pr_diff", description: "CURRENT unified diff (head vs base) as its own message."},
 	{name: "get_pr_commits", description: "Commit history of this PR (sha, message, author) — read commit messages since the last review here."},
-	{name: "get_pr_thread", description: "CURRENT live issue body plus all prior comments (older comments are stale until re-verified)."},
-	{name: "get_pr_meta", description: "PR metadata: title, state, mergeable, head/base sha, file counts."},
+	{name: "get_pr_thread", description: "The comment INDEX: id/author/date/size/preview for every comment, plus the per-comment byte cap. Comment BODIES are NOT included — call get_pr_comment with a row's id to read one comment as its own message. Older comments are stale until re-verified."},
+	{name: "get_pr_comment", description: "Read ONE comment by id (from get_pr_thread's index) as its own message: its full body plus author and date. Reading comments ONE AT A TIME is the intended path — it keeps each message small so nothing is truncated.", params: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id": map[string]any{"type": "integer", "description": "The comment id from get_pr_thread's comments[] index."},
+		},
+		"required": []string{"id"},
+	}},
 }
 
 // sdkTools renders the review tools as the SDK tool union llmkit.Chat takes.
-// Every review tool has an empty argument schema — they are zero-arg reads.
+// get_pr_comment carries an `id` argument schema; the rest are zero-arg reads.
 func sdkTools() []openai.ChatCompletionToolUnionParam {
 	out := make([]openai.ChatCompletionToolUnionParam, 0, len(reviewTools))
 	for _, t := range reviewTools {
-		out = append(out, llmkit.FunctionTool(t.name, t.description, nil))
+		out = append(out, llmkit.FunctionTool(t.name, t.description, t.params))
 	}
 	return out
 }

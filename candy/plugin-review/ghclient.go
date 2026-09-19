@@ -3,6 +3,7 @@ package pluginreview
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,38 +99,74 @@ func (c *ghClient) toolCommits(ctx context.Context, owner, repo string, pr int) 
 	return parseCommits(raw)
 }
 
-type prThread struct {
-	HeadSHA                    string      `json:"head_sha"`
-	BaseSHA                    string      `json:"base_sha"`
-	CurrentBodyIsAuthoritative bool        `json:"current_body_is_authoritative"`
-	CurrentBody                string      `json:"current_body"`
-	Comments                   []prComment `json:"comments"`
-}
-
-type prComment struct {
+// commentMeta is the compact INDEX row for one comment: metadata + a short
+// preview, never the body. The index therefore stays small and is delivered
+// complete; a body is fetched on demand by id (get_pr_comment).
+type commentMeta struct {
 	ID        int    `json:"id"`
 	Author    string `json:"author"`
 	CreatedAt string `json:"created_at"`
-	Body      string `json:"body"`
+	Bytes     int    `json:"bytes"`
+	Preview   string `json:"preview"`
 }
 
-// toolThread: CURRENT live issue body (authoritative) + every prior comment,
-// comments truncated to 24 KiB each — same as the action.
-func (c *ghClient) toolThread(ctx context.Context, owner, repo string, pr int, headSHA, baseSHA string) (prThread, error) {
-	body := ""
-	if raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, pr)); err == nil {
-		body = parseIssueBody(raw)
-	}
-	comments := []prComment{}
+// prThread is the comment INDEX — one compact row per comment. It deliberately
+// carries NO bodies: the PR body is get_pr_body and each comment body is
+// get_pr_comment, so no single tool message can lose its tail to the per-message
+// cap (RCA: the prior aggregate body+all-comments blob exceeded the cap and its
+// tail — the trailing review round and the maintainer sign-off — was
+// structurally invisible to the validator).
+type prThread struct {
+	HeadSHA      string        `json:"head_sha"`
+	BaseSHA      string        `json:"base_sha"`
+	Comments     []commentMeta `json:"comments"`
+	CommentCount int           `json:"comment_count"`
+	// MaxCommentBytes states the per-comment body cap so the model knows how much
+	// of a large comment get_pr_comment will return.
+	MaxCommentBytes int `json:"max_comment_bytes"`
+}
+
+// prBody is the PR description as its OWN message (bounded once at the cap).
+type prBody struct {
+	BodyIsAuthoritative bool   `json:"body_is_authoritative"`
+	Bytes               int    `json:"bytes"`
+	Body                string `json:"body"`
+}
+
+// toolThread returns the comment INDEX only (ids + metadata + preview), plus the
+// per-comment byte cap. The body is NOT here — see toolBody.
+func (c *ghClient) toolThread(ctx context.Context, owner, repo string, pr int, headSHA, baseSHA string, maxCommentBytes int) (prThread, error) {
+	index := []commentMeta{}
 	if rawCs, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, pr)); err == nil {
-		comments = parseComments(rawCs)
+		index = parseCommentIndex(rawCs)
 	}
 	return prThread{
 		HeadSHA: headSHA, BaseSHA: baseSHA,
-		CurrentBodyIsAuthoritative: true,
-		CurrentBody:                body,
-		Comments:                   comments,
+		Comments: index, CommentCount: len(index), MaxCommentBytes: maxCommentBytes,
 	}, nil
+}
+
+// toolBody returns the CURRENT live issue/PR body as its own result. The body is
+// authoritative (the CURRENT body supersedes anything an older comment said).
+func (c *ghClient) toolBody(ctx context.Context, owner, repo string, pr int) (prBody, error) {
+	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, pr))
+	if err != nil {
+		return prBody{}, err
+	}
+	body := parseIssueBody(raw)
+	return prBody{BodyIsAuthoritative: true, Bytes: len(body), Body: body}, nil
+}
+
+// toolComment fetches ONE comment by its GitHub comment id and renders it as a
+// self-contained object (id + author + date + FULL body). It is the read path
+// that makes the thread index lossless: each comment travels as its own message
+// and is bounded exactly once, at the per-message cap.
+func (c *ghClient) toolComment(ctx context.Context, owner, repo string, id int) (json.RawMessage, error) {
+	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, id))
+	if err != nil {
+		return nil, err
+	}
+	return parseOneComment(raw)
 }
 
 type prMeta struct {

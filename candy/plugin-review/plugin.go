@@ -116,7 +116,10 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	default:
 		return nil, fmt.Errorf("pr verb: unknown method %q", input.Method)
 	}
-	result, err := tools.call(context.Background(), method)
+	// verb:pr exposes only the four zero-arg reads (pr_diff/pr_commits/pr_thread/
+	// pr_meta) — get_pr_comment is an engine-internal tool with a required id, not
+	// an authored verb method. An empty args string is correct for them.
+	result, err := tools.call(context.Background(), method, "")
 	if err != nil {
 		return nil, err
 	}
