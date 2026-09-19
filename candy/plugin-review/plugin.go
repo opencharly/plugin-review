@@ -123,8 +123,13 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	return &pb.InvokeReply{ResultJson: []byte(result)}, nil
 }
 
-// splitRepo splits "owner/repo" into its parts ("" when there is no slash).
+// splitRepo splits "owner/repo" into its parts. A repo with no slash yields
+// ("", "") — matching the pre-cutover contract, since a bare name has no owner
+// and the callers treat an empty owner as "not owner-qualified".
 func splitRepo(repo string) (owner, name string) {
+	if !strings.Contains(repo, "/") {
+		return "", ""
+	}
 	owner, name, _ = strings.Cut(repo, "/")
 	return owner, name
 }

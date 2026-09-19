@@ -30,6 +30,14 @@ const (
 	defaultModel    = "~deepseek/deepseek-v4-flash-latest"
 	defaultBaseURL  = "https://openrouter.ai/api/v1"
 	defaultMaxTurns = 20
+	// defaultAttemptTimeout is the OPTIONAL whole-request cap (env
+	// AI_REVIEW_ATTEMPT_TIMEOUT, seconds). The real bound for a streaming review
+	// is defaultStreamIdleTimeout; this is a defense-in-depth outer ceiling an
+	// operator may impose, preserved from the pre-llmkit client so the knob's
+	// contract is unchanged. The workflow must NOT hand it a value smaller than a
+	// large turn legitimately needs (a 5-minute override here was the measured
+	// cause of ~14m runs: turn 2 timed out, the per-turn retry re-sent it).
+	defaultAttemptTimeout = 15 * time.Minute
 	// defaultStreamIdleTimeout is the maximum SILENCE inside a streamed
 	// completion — the gap between chunks, including the wait for the first one
 	// (prompt processing of a large tool-result context). It is the REVIEW
@@ -74,9 +82,12 @@ type reviewConfig struct {
 	// MaxAttempts bounds whole-loop passes (env AI_REVIEW_MAX_ATTEMPTS, default
 	// 3; 1 = fail hard, no repeat cycle).
 	MaxAttempts int
+	// AttemptTimeout is the OPTIONAL whole-request cap (env
+	// AI_REVIEW_ATTEMPT_TIMEOUT, seconds). Zero means "no cap beyond the idle
+	// bound" — the streaming-appropriate default.
+	AttemptTimeout time.Duration
 	// StreamIdleTimeout bounds SILENCE inside a streamed completion (env
-	// AI_REVIEW_STREAM_IDLE_TIMEOUT, seconds). The only time bound — see the
-	// constant doc.
+	// AI_REVIEW_STREAM_IDLE_TIMEOUT, seconds). The primary time bound.
 	StreamIdleTimeout time.Duration
 	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
 	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
@@ -126,7 +137,7 @@ func runReview(ctx context.Context, args []string) (int, error) {
 func parseReviewArgs(args []string, environ []string) (reviewConfig, string, error) {
 	cfg := reviewConfig{
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
-		MaxTurns:          defaultMaxTurns,
+		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
 		RetryBackoff: defaultRetryBackoff,
 		MaxAttempts:  defaultMaxAttempts,
@@ -148,6 +159,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	}
 	if v := getenvAny("AI_REVIEW_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := getenvAny("AI_REVIEW_ATTEMPT_TIMEOUT"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.AttemptTimeout = time.Duration(n) * time.Second
+		}
 	}
 	if v := getenvAny("AI_REVIEW_STREAM_IDLE_TIMEOUT"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {

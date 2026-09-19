@@ -71,6 +71,13 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 		Model:       cfg.Model,
 		APIKey:      cfg.APIKey,
 		IdleTimeout: cfg.StreamIdleTimeout,
+		// Timeout is the OPTIONAL whole-request cap (env
+		// AI_REVIEW_ATTEMPT_TIMEOUT). llmkit's default is 0 = no whole-request
+		// cap, only the idle bound — which is the right default for a streaming
+		// review (a progressing generation is never cut off). An operator may
+		// still impose a hard ceiling here; llmkit applies it via the SDK's
+		// request timeout, not a hand-rolled http.Client.
+		Timeout: cfg.AttemptTimeout,
 		// The review gate's transport is a handful of POSTs per run; a retry
 		// inside the SDK's transport would re-run a non-idempotent generation,
 		// so retries are owned by the review loop (chatTurn), not the client.
@@ -82,9 +89,17 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 			Tool_choice: "auto",
 		},
 	}
-	if cfg.SessionID != "" {
-		c.Headers = map[string]string{"x-opencode-session": cfg.SessionID}
+	// Provider attribution headers (OpenRouter ranks/attributes by these; other
+	// gateways ignore them) plus the optional session-affinity token. llmkit
+	// forwards Config.Headers verbatim.
+	headers := map[string]string{
+		"HTTP-Referer": "https://github.com/opencharly/action-review",
+		"X-Title":      "action-review",
 	}
+	if cfg.SessionID != "" {
+		headers["x-opencode-session"] = cfg.SessionID
+	}
+	c.Headers = headers
 	return c.Normalize()
 }
 

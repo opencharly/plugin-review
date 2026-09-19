@@ -20,9 +20,11 @@ func TestPlanPathFiresOneCommentOneOutput(t *testing.T) {
 	dir := t.TempDir()
 
 	stub := filepath.Join(dir, "gh")
-	// Every `gh api` invocation counts as a call; the comment POST is the only
-	// mutating one, so count by matching its path fragment.
+	postCount := filepath.Join(dir, "post-count")
+	// The stub counts the MUTATING call — a comment POST is the only `--method
+	// POST` invocation — so the test can assert ONE comment per run.
 	ghScript := "#!/bin/bash\n" +
+		"for a in \"$@\"; do [ \"$a\" = \"POST\" ] && echo x >> \"" + postCount + "\"; done\n" +
 		"for a in \"$@\"; do\n" +
 		"  case \"$a\" in\n" +
 		"    */comments*) cat /dev/null; exit 0;;\n" +
@@ -75,10 +77,15 @@ func TestPlanPathFiresOneCommentOneOutput(t *testing.T) {
 		t.Fatalf("runPlan: %v", err)
 	}
 
-	// The single effect: exactly one verdict= line in GITHUB_OUTPUT.
+	// Single effect, BOTH halves: exactly one verdict= line in GITHUB_OUTPUT AND
+	// exactly one PR comment POST.
 	raw, _ := os.ReadFile(ghOutput)
 	if got := strings.Count(string(raw), "verdict="); got != 1 {
 		t.Errorf("GITHUB_OUTPUT verdict= count = %d, want exactly 1:\n%s", got, raw)
+	}
+	posts, _ := os.ReadFile(postCount)
+	if got := strings.Count(string(posts), "x"); got != 1 {
+		t.Errorf("PR comment POST count = %d, want exactly 1", got)
 	}
 }
 

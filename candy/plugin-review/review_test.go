@@ -433,3 +433,40 @@ func TestLLMConfigIdleDefault(t *testing.T) {
 		t.Errorf("IdleTimeout = %v, want llmkit default %v", c.IdleTimeout, llmkit.DefaultIdleTimeout)
 	}
 }
+
+// TestAttemptTimeoutMapped pins the AI_REVIEW_ATTEMPT_TIMEOUT contract: the knob
+// still parses and reaches llmkit.Config.Timeout (the SDK request timeout), so
+// removing the private client changed the mechanism, not the contract.
+func TestAttemptTimeoutMapped(t *testing.T) {
+	t.Setenv("AI_REVIEW_ATTEMPT_TIMEOUT", "45")
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.AttemptTimeout != 45*time.Second {
+		t.Errorf("AttemptTimeout = %v, want 45s", rc.AttemptTimeout)
+	}
+	if got := llmConfig(rc).Timeout; got != 45*time.Second {
+		t.Errorf("llmkit Timeout = %v, want 45s", got)
+	}
+}
+
+// TestAttemptTimeoutDefault is separate so the env override above does not leak.
+func TestAttemptTimeoutDefault(t *testing.T) {
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.AttemptTimeout != defaultAttemptTimeout {
+		t.Errorf("default AttemptTimeout = %v, want %v", rc.AttemptTimeout, defaultAttemptTimeout)
+	}
+}
+
+// TestAttributionHeaders pins the OpenRouter attribution headers survive.
+func TestAttributionHeaders(t *testing.T) {
+	rc, _, _ := parseReviewArgs(nil, nil)
+	h := llmConfig(rc).Headers
+	if h["HTTP-Referer"] == "" || h["X-Title"] != "action-review" {
+		t.Errorf("attribution headers missing: %v", h)
+	}
+}
