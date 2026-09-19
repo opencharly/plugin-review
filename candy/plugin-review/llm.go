@@ -24,8 +24,9 @@ import (
 // built on raw net/http; it is deleted. The duplication was the defect (R3): the
 // private copy lacked llmkit's `reasoning`-delta read, its empty-completion
 // guard, and its unified idle-bound semantics, so every client fix had to be
-// made twice. (The gate's measured slow runs were a separate, workflow-side
-// defect — a hardcoded whole-request cap — fixed in opencharly/.github#102.)
+// made twice. (The gate's measured slow runs had the SAME engine-side cause as
+// the duplication: an unbounded reasoning generation. See the generation-bound
+// comment on llmConfig.Params below.)
 
 // reviewToolSpec is one read-only review tool. The name IS the dispatch key the
 // loop passes to toolSet.call, so there is no separate mapping table.
@@ -91,9 +92,11 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 		// REAL validator context (28 KB rulebook + 79 KB PR thread + 120 KB diff)
 		// deepseek-v4.1-flash generated 1.75 MB of reasoning over 786 s before any
 		// answer, which the whole-request cap then killed mid-generation. Setting
-		// reasoning_effort=none (env AI_REVIEW_REASONING_EFFORT) and a max_tokens
-		// ceiling (env AI_REVIEW_MAX_TOKENS) collapses that to seconds with the
-		// same verdict. Defaults are the bounded values; "" / 0 disables each.
+		// reasoning_effort=low (env AI_REVIEW_REASONING_EFFORT) plus a max_tokens
+		// ceiling (env AI_REVIEW_MAX_TOKENS) collapses that to 47–107 s with a
+		// verdict present; reasoning_effort=none instead returns tool_calls and
+		// loops without a verdict. Defaults are the bounded values; "" / 0
+		// disables each.
 		Params: spec.LLMParams{
 			Temperature: &reviewTemperature,
 			Tool_choice: "auto",
