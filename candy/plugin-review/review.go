@@ -244,9 +244,11 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	return cfg, mode, nil
 }
 
-// parseInt parses a non-negative decimal integer. It rejects a sign and any
-// non-digit, so a negative or float-shaped value (which every caller here treats
-// as invalid config) fails rather than silently truncating.
+// parseInt parses a NON-NEGATIVE decimal integer: it rejects a negative value
+// and a non-number, so a malformed config knob fails rather than silently
+// truncating. (A leading '+' is accepted by strconv.Atoi; that is a valid
+// positive integer and every caller treats it as such — an over-strict digit
+// loop would only add a rejection with no behavioural benefit.)
 func parseInt(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
