@@ -85,10 +85,25 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 		MaxRetries: 0,
 		// The review's generation parameters, pinned as DATA (the retired client
 		// hardcoded temperature 0.2 + tool_choice auto in the request literal).
+		//
+		// BOUND THE GENERATION. The measured root cause of the gate's ~13-minute
+		// runs: the engine sent NO reasoning cap and NO max_tokens, so against the
+		// REAL validator context (28 KB rulebook + 79 KB PR thread + 120 KB diff)
+		// deepseek-v4.1-flash generated 1.75 MB of reasoning over 786 s before any
+		// answer, which the whole-request cap then killed mid-generation. Setting
+		// reasoning_effort=none (env AI_REVIEW_REASONING_EFFORT) and a max_tokens
+		// ceiling (env AI_REVIEW_MAX_TOKENS) collapses that to seconds with the
+		// same verdict. Defaults are the bounded values; "" / 0 disables each.
 		Params: spec.LLMParams{
 			Temperature: &reviewTemperature,
 			Tool_choice: "auto",
 		},
+	}
+	if cfg.ReasoningEffort != "" {
+		c.Params.Reasoning_effort = cfg.ReasoningEffort
+	}
+	if cfg.MaxTokens > 0 {
+		c.Params.Max_tokens = &cfg.MaxTokens
 	}
 	// Provider attribution headers (OpenRouter ranks/attributes by these; other
 	// gateways ignore them) plus the optional session-affinity token. llmkit
@@ -107,6 +122,20 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 // reviewTemperature is the review gate's generation temperature — low for a
 // deterministic verdict. It is a named constant, not a literal in the request.
 var reviewTemperature = 0.2
+
+// Generation bounds — the fix for the gate's measured ~13-minute runs (RCA
+// 2026-09-19). deepseek-v4.1-flash is a REASONING model: given the real
+// validator context (28 KB rulebook + 79 KB PR thread + 120 KB diff) with NO
+// cap it generated 1.75 MB of reasoning over 786 s before answering, which the
+// workflow's whole-request cap killed mid-generation; a too-tight cap instead
+// yields an empty completion (`turn 2: final content len=0`). Capping the OUTPUT
+// (max_tokens) and the reasoning depth (reasoning_effort=low) reliably produces a
+// verdict in ~1–2 minutes. Both are env-overridable; a zero/empty value disables
+// that knob (the operator accepts the unbounded behaviour).
+const (
+	defaultReasoningEffort = "low"
+	defaultMaxTokens       = 65536
+)
 
 // reviewSessionID returns the session-affinity id for a run. `AI_REVIEW_SESSION_ID`:
 //   - UNSET            → mint one random id (the normal case);

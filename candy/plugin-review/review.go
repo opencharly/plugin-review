@@ -90,6 +90,14 @@ type reviewConfig struct {
 	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
 	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
 	ToolResultMaxBytes int
+	// ReasoningEffort bounds the model's reasoning depth (env
+	// AI_REVIEW_REASONING_EFFORT; "low" default, "" disables). A reasoning model
+	// given the full validator context otherwise generates megabytes of thinking
+	// and blows the time budget.
+	ReasoningEffort string
+	// MaxTokens bounds the completion, reasoning + answer (env
+	// AI_REVIEW_MAX_TOKENS; 0 disables).
+	MaxTokens int64
 	// RetryBackoff is the base backoff between re-issues of a failed turn
 	// request. Not env-configurable: it is a scheduling constant, not a policy
 	// knob (tests set it directly).
@@ -137,6 +145,7 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
 		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
+		ReasoningEffort: defaultReasoningEffort, MaxTokens: defaultMaxTokens,
 		RetryBackoff: defaultRetryBackoff,
 		MaxAttempts:  defaultMaxAttempts,
 		SessionID:    reviewSessionID(),
@@ -171,6 +180,14 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	if v := getenvAny("AI_REVIEW_TOOL_RESULT_MAX_BYTES"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
 			cfg.ToolResultMaxBytes = n
+		}
+	}
+	if v, ok := os.LookupEnv("AI_REVIEW_REASONING_EFFORT"); ok {
+		cfg.ReasoningEffort = v // "" explicitly disables the bound
+	}
+	if v := getenvAny("AI_REVIEW_MAX_TOKENS"); v != "" {
+		if n, e := parseInt64(v); e == nil && n > 0 {
+			cfg.MaxTokens = n
 		}
 	}
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
@@ -247,6 +264,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 // truncating. (A leading '+' is accepted by strconv.Atoi; that is a valid
 // positive integer and every caller treats it as such — an over-strict digit
 // loop would only add a rejection with no behavioural benefit.)
+// parseInt64 parses a positive int64 (a token budget). Non-positive/empty is an
+// error so the caller keeps its default.
+func parseInt64(s string) (int64, error) {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("not a positive integer: %q", s)
+	}
+	return n, nil
+}
+
 func parseInt(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {

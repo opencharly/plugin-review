@@ -486,3 +486,59 @@ func TestAttributionHeaders(t *testing.T) {
 		t.Errorf("attribution headers missing: %v", h)
 	}
 }
+
+// TestGenerationBounds pins the RCA fix: a bounded reasoning effort and output
+// token cap are set by default (the unbounded request is what produced the
+// 1.75 MB / 786 s generation), and each is env-overridable.
+func TestGenerationBounds(t *testing.T) {
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ReasoningEffort != defaultReasoningEffort {
+		t.Errorf("ReasoningEffort default = %q, want %q", rc.ReasoningEffort, defaultReasoningEffort)
+	}
+	if rc.MaxTokens != defaultMaxTokens {
+		t.Errorf("MaxTokens default = %d, want %d", rc.MaxTokens, defaultMaxTokens)
+	}
+	lc := llmConfig(rc)
+	if lc.Params.Reasoning_effort != defaultReasoningEffort {
+		t.Errorf("llmkit Reasoning_effort = %q, want %q", lc.Params.Reasoning_effort, defaultReasoningEffort)
+	}
+	if lc.Params.Max_tokens == nil || *lc.Params.Max_tokens != defaultMaxTokens {
+		t.Errorf("llmkit Max_tokens = %v, want %d", lc.Params.Max_tokens, defaultMaxTokens)
+	}
+}
+
+func TestGenerationBoundsOverride(t *testing.T) {
+	t.Setenv("AI_REVIEW_REASONING_EFFORT", "none")
+	t.Setenv("AI_REVIEW_MAX_TOKENS", "32000")
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ReasoningEffort != "none" || rc.MaxTokens != 32000 {
+		t.Fatalf("overrides not applied: effort=%q max=%d", rc.ReasoningEffort, rc.MaxTokens)
+	}
+	lc := llmConfig(rc)
+	if lc.Params.Reasoning_effort != "none" || lc.Params.Max_tokens == nil || *lc.Params.Max_tokens != 32000 {
+		t.Errorf("overrides not mapped: %+v", lc.Params)
+	}
+}
+
+// TestGenerationBoundsDisable: an explicit empty effort / zero tokens disables
+// THAT bound (the operator accepts the unbounded behaviour).
+func TestGenerationBoundsDisable(t *testing.T) {
+	t.Setenv("AI_REVIEW_REASONING_EFFORT", "")
+	t.Setenv("AI_REVIEW_MAX_TOKENS", "0")
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ReasoningEffort != "" {
+		t.Errorf("empty effort must disable the bound, got %q", rc.ReasoningEffort)
+	}
+	if rc.MaxTokens != defaultMaxTokens {
+		t.Errorf("invalid max tokens must keep the default, got %d", rc.MaxTokens)
+	}
+}
