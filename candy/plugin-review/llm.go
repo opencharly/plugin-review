@@ -19,12 +19,13 @@ import (
 // what is SPECIFIC to the review gate: mapping the reviewConfig onto an
 // llmkit.Config and the four read-only review tools onto SDK tool schemas.
 //
-// There is NO hand-rolled HTTP client, no SSE scanner, no tool-delta
-// accumulator, and no whole-generation deadline here. The pre-cutover llm.go was
-// a 456-line duplicate of llmkit built on raw net/http; it is deleted. That
-// duplication was the root cause of the review gate's measured stalls — a second
-// client with its own non-streaming request path under a 5-minute whole-request
-// deadline, drifting from the client every other consumer uses.
+// There is NO hand-rolled HTTP client, no SSE scanner, and no tool-delta
+// accumulator here. The pre-cutover llm.go was a 456-line duplicate of llmkit
+// built on raw net/http; it is deleted. The duplication was the defect (R3): the
+// private copy lacked llmkit's `reasoning`-delta read, its empty-completion
+// guard, and its unified idle-bound semantics, so every client fix had to be
+// made twice. (The gate's measured slow runs were a separate, workflow-side
+// defect — a hardcoded whole-request cap — fixed in opencharly/.github#102.)
 
 // reviewToolSpec is one read-only review tool. The name IS the dispatch key the
 // loop passes to toolSet.call, so there is no separate mapping table.
@@ -107,13 +108,14 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 // deterministic verdict. It is a named constant, not a literal in the request.
 var reviewTemperature = 0.2
 
-// reviewSessionID returns the per-run session-affinity id (or "" when session
-// affinity is explicitly disabled). opencode's Go gateway REJECTS a request
-// without the header (HTTP 400 MissingSessionID); gateways that do not use it
-// ignore an unknown header.
+// reviewSessionID returns the session-affinity id for a run. `AI_REVIEW_SESSION_ID`:
+//   - UNSET            → mint one random id (the normal case);
+//   - set to a value   → use that value verbatim (an operator pinning a known id);
+//   - set to ""        → return "" (session affinity DISABLED — a non-opencode
+//     gateway that has no use for the header).
 func reviewSessionID() string {
-	if v, ok := os.LookupEnv("AI_REVIEW_SESSION_ID"); ok && v == "" {
-		return "" // explicit empty = disable session affinity (a non-opencode gateway)
+	if v, ok := os.LookupEnv("AI_REVIEW_SESSION_ID"); ok {
+		return v // pinned value, or "" to disable
 	}
 	return newSessionID()
 }

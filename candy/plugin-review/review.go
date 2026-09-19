@@ -40,12 +40,10 @@ const (
 	defaultAttemptTimeout = 15 * time.Minute
 	// defaultStreamIdleTimeout is the maximum SILENCE inside a streamed
 	// completion — the gap between chunks, including the wait for the first one
-	// (prompt processing of a large tool-result context). It is the REVIEW
-	// GATE'S ONLY TIME BOUND: the shared llmkit client deliberately has no
-	// whole-generation deadline, so a slow-but-progressing review is never cut
-	// off while a silent provider fails in bounded time. (The retired llm.go
-	// capped a whole non-streaming generation at 5 minutes, which is what killed
-	// the large turn-2 request twice per run — the RCA this cutover closes.)
+	// (prompt processing of a large tool-result context). It is the PRIMARY time
+	// bound: llmkit has no whole-generation deadline, so a slow-but-progressing
+	// review is never cut off while a silent provider fails in bounded time.
+	// (An OPTIONAL whole-request cap is preserved as defaultAttemptTimeout below.)
 	defaultStreamIdleTimeout = 3 * time.Minute
 	// defaultToolResultMaxBytes caps ONE tool result appended to the
 	// conversation. Tool output is the context-growth trigger: get_pr_diff is up

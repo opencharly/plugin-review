@@ -389,6 +389,22 @@ func TestSessionAffinityDisabled(t *testing.T) {
 	}
 }
 
+// TestSessionIDPinned honors an explicit AI_REVIEW_SESSION_ID value verbatim
+// (not just the empty-disable case).
+func TestSessionIDPinned(t *testing.T) {
+	t.Setenv("AI_REVIEW_SESSION_ID", "abc123")
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.SessionID != "abc123" {
+		t.Fatalf("SessionID = %q, want the pinned value abc123", rc.SessionID)
+	}
+	if got := llmConfig(rc).Headers["x-opencode-session"]; got != "abc123" {
+		t.Errorf("header = %q, want abc123", got)
+	}
+}
+
 // TestSessionIDStableAcrossPasses: the session id is minted ONCE per run, so
 // every pass/turn of a multi-pass run carries the SAME value.
 func TestSessionIDStableAcrossPasses(t *testing.T) {

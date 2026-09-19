@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/opencharly/sdk/llmkit"
 )
@@ -25,7 +26,7 @@ func TestLiveGateway(t *testing.T) {
 	cfg := reviewConfig{
 		Provider: "ollama-cloud", Model: "deepseek-v4.1-flash",
 		BaseURL: "https://ollama.com/v1", APIKey: key,
-		StreamIdleTimeout: 120000000000, // 2m
+		StreamIdleTimeout: 2 * time.Minute,
 		SessionID:         newSessionID(),
 	}
 	lc := llmConfig(cfg)
