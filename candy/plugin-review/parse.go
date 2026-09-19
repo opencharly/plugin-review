@@ -19,8 +19,6 @@ func getenvAny(names ...string) string {
 	return ""
 }
 
-func lookupEnv(k string) (string, bool) { return os.LookupEnv(k) }
-
 // truncateStr truncates s to at most bytes UTF-8 bytes, avoiding a partial
 // character at the cut (same behaviour as the action's truncate()).
 func truncateStr(s string, bytes int) string {

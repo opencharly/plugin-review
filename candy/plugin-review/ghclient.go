@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -58,7 +59,7 @@ func envWithToken(token string) []string {
 	// Rebuild a minimal env: keep PATH/HTTP_PROXY style vars, inject GITHUB_TOKEN.
 	keep := []string{"PATH", "HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"}
 	for _, k := range keep {
-		v, ok := lookupEnv(k)
+		v, ok := os.LookupEnv(k)
 		if ok {
 			base = append(base, k+"="+v)
 		}

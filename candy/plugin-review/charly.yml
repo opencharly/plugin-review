@@ -1,6 +1,6 @@
 plugin-review:
     candy:
-        version: 2026.251.0000
+        version: 2026.262.1709
         description: |-
             Read-only GitHub PR review for OpenCharly's gate: the deterministic
             verb:pr tools (pr_diff / pr_commits / pr_thread / pr_meta) plus

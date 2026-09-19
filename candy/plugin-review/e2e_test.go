@@ -33,11 +33,16 @@ func TestReviewE2E(t *testing.T) {
 		if req.URL.Path != "/chat/completions" {
 			t.Errorf("unexpected path %s", req.URL.Path)
 		}
-		var cr chatRequest
+		var cr struct {
+			Temperature *float64 `json:"temperature"`
+			Stream      bool     `json:"stream"`
+			ToolChoice  string   `json:"tool_choice"`
+			Tools       []any    `json:"tools"`
+		}
 		if err := json.NewDecoder(req.Body).Decode(&cr); err != nil {
 			t.Errorf("decode chat request: %v", err)
 		}
-		if cr.Temperature != 0.2 || len(cr.Tools) != 4 || cr.ToolChoice != "auto" {
+		if cr.Temperature == nil || *cr.Temperature != reviewTemperature || len(cr.Tools) != 4 || cr.ToolChoice != "auto" {
 			t.Errorf("unexpected loop shape: temp=%v tools=%d choice=%q", cr.Temperature, len(cr.Tools), cr.ToolChoice)
 		}
 		if !cr.Stream {
@@ -45,11 +50,11 @@ func TestReviewE2E(t *testing.T) {
 		}
 		rw.Header().Set("Content-Type", "text/event-stream")
 		if calls == 1 {
-			writeSSEChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
+			sseChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
 		} else {
-			writeSSEChunk(rw, `{"choices":[{"delta":{"content":"## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"}}]}`)
+			sseChunk(rw, `{"choices":[{"delta":{"content":"## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"}}]}`)
 		}
-		writeSSEDone(rw)
+		sseDone(rw)
 	}))
 	defer llmSrv.Close()
 

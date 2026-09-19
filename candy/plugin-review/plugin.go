@@ -12,6 +12,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/opencharly/plugin-review/candy/plugin-review/params"
 	"github.com/opencharly/sdk"
@@ -21,7 +22,7 @@ import (
 //go:embed schema/*.cue
 var schemaFS embed.FS
 
-const calver = "2026.251.0000"
+const calver = "2026.262.1709"
 
 // NewProvider returns the provider for in-proc registration or out-of-proc serving.
 func NewProvider() pb.ProviderServer { return &provider{} }
@@ -122,18 +123,8 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	return &pb.InvokeReply{ResultJson: []byte(result)}, nil
 }
 
+// splitRepo splits "owner/repo" into its parts ("" when there is no slash).
 func splitRepo(repo string) (owner, name string) {
-	if i := indexByte(repo, '/'); i >= 0 {
-		return repo[:i], repo[i+1:]
-	}
-	return "", ""
-}
-
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
+	owner, name, _ = strings.Cut(repo, "/")
+	return owner, name
 }

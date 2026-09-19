@@ -2,7 +2,6 @@ package pluginreview
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -270,9 +269,3 @@ type yamlDecoder struct{ raw []byte }
 func (d *yamlDecoder) decodeStrict(v any) error {
 	return yamlUnmarshalStrict(d.raw, v)
 }
-
-// yamlUnmarshalStrict is implemented in yamlutil.go (kept separate so the file
-// reads like a spec; see there for the yaml.v3 wiring).
-func yamlUnmarshalStrict(raw []byte, v any) error { return yamlUnmarshalStrictImpl(raw, v) }
-
-var _ = json.Marshal // keep encoding/json imported in this file for future use

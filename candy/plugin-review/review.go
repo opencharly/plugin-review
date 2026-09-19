@@ -2,14 +2,19 @@ package pluginreview
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/opencharly/sdk/llmkit"
 )
 
 // =============================================================================
@@ -25,17 +30,14 @@ const (
 	defaultModel    = "~deepseek/deepseek-v4-flash-latest"
 	defaultBaseURL  = "https://openrouter.ai/api/v1"
 	defaultMaxTurns = 20
-	// defaultAttemptTimeout bounds ONE turn request as a whole (request headers
-	// through the last streamed chunk). It was 5m covering a NON-streaming whole
-	// generation, so the large tool-result turn 2 had to finish inside a single
-	// wall clock and died with "awaiting headers" (RCA: review timeouts).
-	// Streaming moved the real bound to defaultStreamIdleTimeout; this stays as
-	// the generous outer cap.
-	defaultAttemptTimeout = 15 * time.Minute
 	// defaultStreamIdleTimeout is the maximum SILENCE inside a streamed
 	// completion — the gap between chunks, including the wait for the first one
-	// (prompt processing of a large tool-result context). A live generation may
-	// run far longer than this; a dead one is cut here.
+	// (prompt processing of a large tool-result context). It is the REVIEW
+	// GATE'S ONLY TIME BOUND: the shared llmkit client deliberately has no
+	// whole-generation deadline, so a slow-but-progressing review is never cut
+	// off while a silent provider fails in bounded time. (The retired llm.go
+	// capped a whole non-streaming generation at 5 minutes, which is what killed
+	// the large turn-2 request twice per run — the RCA this cutover closes.)
 	defaultStreamIdleTimeout = 3 * time.Minute
 	// defaultToolResultMaxBytes caps ONE tool result appended to the
 	// conversation. Tool output is the context-growth trigger: get_pr_diff is up
@@ -72,11 +74,9 @@ type reviewConfig struct {
 	// MaxAttempts bounds whole-loop passes (env AI_REVIEW_MAX_ATTEMPTS, default
 	// 3; 1 = fail hard, no repeat cycle).
 	MaxAttempts int
-	// AttemptTimeout bounds ONE turn request as a whole: request headers through
-	// the last streamed chunk (env AI_REVIEW_ATTEMPT_TIMEOUT, seconds).
-	AttemptTimeout time.Duration
 	// StreamIdleTimeout bounds SILENCE inside a streamed completion (env
-	// AI_REVIEW_STREAM_IDLE_TIMEOUT, seconds).
+	// AI_REVIEW_STREAM_IDLE_TIMEOUT, seconds). The only time bound — see the
+	// constant doc.
 	StreamIdleTimeout time.Duration
 	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
 	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
@@ -122,7 +122,7 @@ func runReview(ctx context.Context, args []string) (int, error) {
 func parseReviewArgs(args []string, environ []string) (reviewConfig, string, error) {
 	cfg := reviewConfig{
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
-		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
+		MaxTurns:          defaultMaxTurns,
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
 		RetryBackoff: defaultRetryBackoff,
 		MaxAttempts:  defaultMaxAttempts,
@@ -143,11 +143,6 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	}
 	if v := getenvAny("AI_REVIEW_BASE_URL"); v != "" {
 		cfg.BaseURL = v
-	}
-	if v := getenvAny("AI_REVIEW_ATTEMPT_TIMEOUT"); v != "" {
-		if n, e := parseInt(v); e == nil && n > 0 {
-			cfg.AttemptTimeout = time.Duration(n) * time.Second
-		}
 	}
 	if v := getenvAny("AI_REVIEW_STREAM_IDLE_TIMEOUT"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
@@ -228,13 +223,13 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 	return cfg, mode, nil
 }
 
+// parseInt parses a non-negative decimal integer. It rejects a sign and any
+// non-digit, so a negative or float-shaped value (which every caller here treats
+// as invalid config) fails rather than silently truncating.
 func parseInt(s string) (int, error) {
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0, fmt.Errorf("not a number: %s", s)
-		}
-		n = n*10 + int(r-'0')
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("not a non-negative integer: %q", s)
 	}
 	return n, nil
 }
@@ -396,14 +391,12 @@ func readFixture(name string) (string, error) {
 	return string(raw), nil
 }
 
-// runAgentLoop: temperature 0.2, tool_choice auto, max_turns. The retry policy
-// lives at the layer that actually fails: a FAILED TURN REQUEST is re-issued
-// (chatTurn, up to maxTurnRequestAttempts, same conversation state), and only a
-// COMPLETED pass that produced no Verdict line re-runs the loop
-// (cfg.MaxAttempts, env AI_REVIEW_MAX_ATTEMPTS, default 3; 1 = fail hard, no
-// repeat cycle). A turn-2 timeout therefore resumes at turn 2 — it never
-// restarts the review from turn 1 (pre-RCA behaviour re-ran the WHOLE loop per
-// attempt, redoing every already-paid turn).
+// runAgentLoop: the review's pass budget over the shared llmkit client.
+// temperature/streaming/bounds belong to llmkit; this layer owns only the
+// REVIEW-specific policy: a completed pass with no Verdict line is retried
+// (cfg.MaxAttempts, env AI_REVIEW_MAX_ATTEMPTS, default 3; 1 = fail hard), and a
+// transport failure is reported as the distinct inconclusive class rather than
+// being retried as a whole loop.
 func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
 	backoff := cfg.RetryBackoff
 	if backoff <= 0 {
@@ -418,11 +411,11 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 		review, err := agentLoopOnce(ctx, cfg, prompt, tools)
 		if err != nil {
 			fmt.Println("plugin-review: pass " + fmt.Sprint(pass) + " failed: " + err.Error())
-			// A transport failure is NOT a reason to re-run the whole loop: every
-			// turn request already carries its own re-issues. Report the distinct
+			// A transport failure is NOT a reason to re-run the whole loop: the
+			// failing turn already carries its own re-issues. Report the distinct
 			// inconclusive class instead (the gate must never read it as a BLOCK).
 			if isTimeoutClass(err) {
-				return "", fmt.Errorf("inconclusive: the LLM provider never answered or stopped streaming and every re-issue of the failing turn timed out (idle bound %v, whole-request bound %v); this is NOT a review verdict — re-run the gate", cfg.StreamIdleTimeout, cfg.AttemptTimeout)
+				return "", fmt.Errorf("inconclusive: the LLM provider never answered or stopped streaming and every re-issue of the failing turn timed out (idle bound %v); this is NOT a review verdict — re-run the gate", cfg.StreamIdleTimeout)
 			}
 			if pass < maxPasses {
 				if err := sleepCtx(ctx, time.Duration(pass)*backoff); err != nil {
@@ -446,19 +439,19 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 	return "", fmt.Errorf("all %d attempts failed to produce a Verdict line", maxPasses)
 }
 
-// chatTurn issues ONE turn request, re-issuing it on failure with the SAME
-// conversation state. Re-issuing is safe and deterministic: all four review
-// tools are read-only gh-api GETs (get_pr_diff / get_pr_commits / get_pr_thread
-// / get_pr_meta) and the loop is the only writer of `messages`, so a retried
-// turn cannot duplicate a side effect or lose accumulated context.
-func chatTurn(ctx context.Context, cfg reviewConfig, llm *llmClient, messages []chatMsg) (chatMsg, error) {
+// chatTurn issues ONE turn request through llmkit, re-issuing it on failure with
+// the SAME conversation state. Re-issuing is safe and deterministic: all four
+// review tools are read-only gh-api GETs and the loop is the only writer of the
+// conversation, so a retried turn cannot duplicate a side effect or lose
+// accumulated context. This is the ONE retry site for a failed turn.
+func chatTurn(ctx context.Context, cfg reviewConfig, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
 	backoff := cfg.RetryBackoff
 	if backoff <= 0 {
 		backoff = defaultRetryBackoff
 	}
 	var lastErr error
 	for attempt := 1; attempt <= maxTurnRequestAttempts; attempt++ {
-		msg, err := llm.chat(ctx, messages)
+		msg, err := llmkit.Chat(ctx, llm, llmkit.ToSDKMessages(messages), sdkTools())
 		if err == nil {
 			return msg, nil
 		}
@@ -466,11 +459,11 @@ func chatTurn(ctx context.Context, cfg reviewConfig, llm *llmClient, messages []
 		fmt.Printf("plugin-review: turn request attempt %d/%d failed: %v\n", attempt, maxTurnRequestAttempts, err)
 		if attempt < maxTurnRequestAttempts {
 			if err := sleepCtx(ctx, time.Duration(attempt)*backoff); err != nil {
-				return chatMsg{}, lastErr
+				return llmkit.Message{}, lastErr
 			}
 		}
 	}
-	return chatMsg{}, lastErr
+	return llmkit.Message{}, lastErr
 }
 
 // sleepCtx waits for d but abandons the wait as soon as ctx is done, so a
@@ -498,19 +491,24 @@ func isTimeoutClass(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
+	// llmkit's named stall class ("LLM stream stalled: no chunk for …") plus the
+	// transport-level timeouts that reach the caller unwrapped.
 	msg := err.Error()
-	return strings.Contains(msg, "context deadline exceeded") ||
+	return strings.Contains(msg, "stream stalled") ||
+		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "Client.Timeout exceeded") ||
 		strings.Contains(msg, "timeout awaiting response headers") ||
 		strings.Contains(msg, "i/o timeout")
 }
 
 func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
-	llm := newLLMClient(cfg)
-	sys := prompt
+	llm := llmConfig(cfg)
 	userMsg := fmt.Sprintf("Review pull request #%d in %s. Current head %s vs base %s. Use the read-only tools to verify the CURRENT state, then produce your review ending in exactly 'Verdict: PASS' or 'Verdict: BLOCK' on the final line.",
 		cfg.PR, cfg.Repo, truncateStr(tools.headSHA, 12), truncateStr(tools.baseSHA, 12))
-	messages := []chatMsg{{Role: "system", Content: &sys}, {Role: "user", Content: &userMsg}}
+	messages := []llmkit.Message{
+		{Role: "system", Content: llmkit.Strptr(prompt)},
+		{Role: "user", Content: llmkit.Strptr(userMsg)},
+	}
 
 	for turn := 0; turn < cfg.MaxTurns; turn++ {
 		msg, err := chatTurn(ctx, cfg, llm, messages)
@@ -521,23 +519,22 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 		if msg.Content != nil {
 			content = *msg.Content
 		}
-		assistant := chatMsg{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls}
-		messages = append(messages, assistant)
+		messages = append(messages, msg)
 		if len(msg.ToolCalls) == 0 {
 			fmt.Printf("plugin-review: turn %d: final content len=%d\n", turn+1, len(content))
 			return content, nil
 		}
 		fmt.Printf("plugin-review: turn %d: %d tool call(s)\n", turn+1, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
-			out, err := tools.call(ctx, tc.Function.Name)
+			out, err := tools.call(ctx, tc.Name)
 			if err != nil {
 				out = "{\"error\": " + jsonQuote(err.Error()) + "}"
 			}
 			// Bound the payload the model will see on the NEXT turn: tool output is
-			// the context-growth trigger, and unbounded growth is what pushed the
-			// non-streaming turn-2 request past the whole-response deadline.
+			// the context-growth trigger, and unbounded growth is what bloated the
+			// review context before this cutover.
 			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
-			messages = append(messages, chatMsg{Role: "tool", ToolCallID: tc.ID, Content: &c})
+			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(c)})
 		}
 	}
 	// turn budget exhausted: return the last assistant content with content, if any
@@ -565,16 +562,8 @@ func extractVerdict(text string) (found []string, distinct []string, n int) {
 			distinct = append(distinct, f)
 		}
 	}
-	sortStrings(distinct)
+	sort.Strings(distinct)
 	return found, distinct, len(found)
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 func jsonQuote(s string) string {
@@ -614,6 +603,8 @@ func writeOutput(sb *strings.Builder, name, value string) {
 	sb.WriteString("\n" + name + "<<" + delim + "\n" + value + "\n" + delim)
 }
 
+// appendFile appends to $GITHUB_OUTPUT (which GitHub pre-creates per step, but
+// may be absent in a local run).
 func appendFile(p string, b []byte) error {
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -624,13 +615,19 @@ func appendFile(p string, b []byte) error {
 	return err
 }
 
+// randAlpha returns n lowercase-alphanumeric characters from crypto/rand. The
+// delimiter only needs to be unlikely to appear in the value; crypto/rand keeps
+// it unpredictable without a hand-rolled LCG.
 func randAlpha(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
-	seed := time.Now().UnixNano()
+	if _, err := rand.Read(b); err != nil {
+		// A delimiter collision is handled by the caller's loop; an
+		// unpredictable value is preferable but not load-bearing.
+		return strings.Repeat("x", n)
+	}
 	for i := range b {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		b[i] = letters[uint64(seed>>33)%uint64(len(letters))]
+		b[i] = letters[int(b[i])%len(letters)]
 	}
 	return string(b)
 }
