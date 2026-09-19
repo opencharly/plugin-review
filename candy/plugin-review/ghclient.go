@@ -31,13 +31,25 @@ func newGHClient() *ghClient {
 // GITHUB_TOKEN so a workflow-injected github.token flows through without gh
 // auth setup.
 func (c *ghClient) api(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"api"}, args...)
-	var cmd *exec.Cmd
+	return c.apiFlags(ctx, nil, args...)
+}
+
+// apiPaginated runs `gh api --paginate --slurp <args...>`: gh follows the Link
+// header across every page and `--slurp` wraps the per-page arrays in ONE outer
+// array. This is what makes the comment index complete past the 100-row
+// per-page limit — a single `per_page=100` request silently drops a longer
+// thread's newest comments, the exact defect class this PR fixes.
+func (c *ghClient) apiPaginated(ctx context.Context, args ...string) (string, error) {
+	return c.apiFlags(ctx, []string{"--paginate", "--slurp"}, args...)
+}
+
+// apiFlags is the ONE gh-api invoker: it runs `gh api [flags...] <args...>`.
+func (c *ghClient) apiFlags(ctx context.Context, flags []string, args ...string) (string, error) {
+	full := append([]string{"api"}, flags...)
+	full = append(full, args...)
+	cmd := exec.Command("gh", full...)
 	if c.token != "" {
-		cmd = exec.Command("gh", full...)
 		cmd.Env = append(envWithToken(c.token), "NO_COLOR=1")
-	} else {
-		cmd = exec.Command("gh", full...)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -47,7 +59,7 @@ func (c *ghClient) api(ctx context.Context, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("gh api %s: %w: %s", strings.Join(args, " "), err, truncateStr(msg, 240))
+		return "", fmt.Errorf("gh api %s: %w: %s", strings.Join(full[1:], " "), err, truncateStr(msg, 240))
 	}
 	return stdout.String(), nil
 }
@@ -68,7 +80,7 @@ func envWithToken(token string) []string {
 	return append(base, "GITHUB_TOKEN="+token, "GH_TOKEN="+token)
 }
 
-// ---- the four read-only tools (port of pi-review-action's index.js tools) ----
+// ---- the read-only tools (port of pi-review-action's index.js tools) ----
 
 // toolDiff: CURRENT unified diff (head vs base), truncated to 96 KiB — same as the
 // action's truncate().
@@ -92,7 +104,7 @@ type prCommit struct {
 
 // toolCommits: PR commit history (sha, message, author) — same shape as the action.
 func (c *ghClient) toolCommits(ctx context.Context, owner, repo string, pr int) ([]prCommit, error) {
-	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, pr))
+	raw, err := c.apiPaginated(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, pr))
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +149,9 @@ type prBody struct {
 // per-comment byte cap. The body is NOT here — see toolBody.
 func (c *ghClient) toolThread(ctx context.Context, owner, repo string, pr int, headSHA, baseSHA string, maxCommentBytes int) (prThread, error) {
 	index := []commentMeta{}
-	if rawCs, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, pr)); err == nil {
+	// --paginate --slurp: a single per_page=100 request would drop a longer
+	// thread's newest comments (the class this PR fixes), so follow EVERY page.
+	if rawCs, err := c.apiPaginated(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, pr)); err == nil {
 		index = parseCommentIndex(rawCs)
 	}
 	return prThread{

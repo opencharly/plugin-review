@@ -78,8 +78,10 @@ func truncateToolResult(s string, max int) string {
 }
 
 func parseCommits(raw string) ([]prCommit, error) {
-	var cs []rawCommit
-	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+	// Accept the plain array AND the `gh api --paginate --slurp` array-of-pages
+	// shape, same as parseCommentIndex — a >100-commit PR must be complete.
+	cs, err := flattenPages[rawCommit](raw)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]prCommit, 0, len(cs))
@@ -131,9 +133,18 @@ const commentPreviewBytes = 200
 // and can never be truncated — this is what fixes the aggregate-blob RCA (see
 // truncateToolResult). The model reads a body by calling get_pr_comment with the
 // row's id, which returns THAT comment as its own bounded message.
+// parseCommentIndex parses the comments endpoint into the compact INDEX the
+// thread tool returns. It accepts BOTH shapes the API can yield:
+//
+//   - the plain array from a single page: `[{…},{…}]`;
+//   - the `gh api --paginate --slurp` array-of-pages: `[[{…}],[{…}]]`,
+//
+// so the caller's pagination (which is what makes a >100-comment thread
+// complete) is transparent here. A page-shaped payload is flattened in order,
+// preserving GitHub's ascending comment order across pages.
 func parseCommentIndex(raw string) []commentMeta {
-	var cs []rawComment
-	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+	cs, err := flattenPages[rawComment](raw)
+	if err != nil {
 		return nil
 	}
 	out := make([]commentMeta, 0, len(cs))
@@ -148,6 +159,28 @@ func parseCommentIndex(raw string) []commentMeta {
 		})
 	}
 	return out
+}
+
+// flattenPages decodes either a flat JSON array of T or the array-of-arrays shape
+// `gh api --paginate --slurp` produces, returning the concatenated rows in order.
+func flattenPages[T any](raw string) ([]T, error) {
+	// Try the slurped (array of pages) shape first: it is what --slurp yields.
+	var pages [][]T
+	if err := json.Unmarshal([]byte(raw), &pages); err == nil {
+		// Distinguish `[[…]]` from `[]`; a JSON object element would have failed
+		// the [][]T decode already, so a successful decode with any page is the
+		// slurped shape. An empty `[]` also decodes here and means no rows.
+		out := make([]T, 0, len(pages))
+		for _, p := range pages {
+			out = append(out, p...)
+		}
+		return out, nil
+	}
+	var flat []T
+	if err := json.Unmarshal([]byte(raw), &flat); err != nil {
+		return nil, err
+	}
+	return flat, nil
 }
 
 // parseOneComment renders a SINGLE fetched comment as a self-contained JSON

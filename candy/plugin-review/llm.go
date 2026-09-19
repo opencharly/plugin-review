@@ -17,7 +17,7 @@ import (
 // owns the wire format, the SSE decoder, tool-call assembly, the idle bound, the
 // ollama `reasoning` read, and the empty-completion guard. This file owns only
 // what is SPECIFIC to the review gate: mapping the reviewConfig onto an
-// llmkit.Config and the four read-only review tools onto SDK tool schemas.
+// llmkit.Config and the six read-only review tools onto SDK tool schemas.
 //
 // There is NO hand-rolled HTTP client, no SSE scanner, and no tool-delta
 // accumulator here. The pre-cutover llm.go was a 456-line duplicate of llmkit

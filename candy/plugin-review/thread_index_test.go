@@ -79,6 +79,42 @@ func TestCommentIndexIsLosslessUnderManyLargeComments(t *testing.T) {
 	t.Logf("index of %d comments: %d bytes (aggregate bodies were %d bytes)", n, len(rawIndex), len(rawComments))
 }
 
+// TestCommentIndexFlattensPaginatedPages proves the pagination fix: `gh api
+// --paginate --slurp` returns an ARRAY OF PAGES, and the index must contain the
+// rows from EVERY page — not just the first. A single per_page=100 request (the
+// pre-fix code) silently dropped a longer thread's newest comments, which is the
+// exact defect class this PR fixes.
+func TestCommentIndexFlattensPaginatedPages(t *testing.T) {
+	page := func(base, n int) []map[string]any {
+		rows := make([]map[string]any, 0, n)
+		for i := 0; i < n; i++ {
+			id := base + i
+			rows = append(rows, map[string]any{
+				"id": id, "user": map[string]any{"login": "u"}, "created_at": "2026-01-01T00:00:00Z",
+				"body": fmt.Sprintf("c%d", id),
+			})
+		}
+		return rows
+	}
+	// Two pages: 100 rows then 50 — GitHub's Link-header pagination shape.
+	slurped, err := json.Marshal([][]map[string]any{page(1, 100), page(101, 50)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := parseCommentIndex(string(slurped))
+	if len(idx) != 150 {
+		t.Fatalf("index rows = %d, want 150 (paginated pages not flattened)", len(idx))
+	}
+	if idx[149].ID != 150 {
+		t.Fatalf("last row id = %d, want 150 — the newest page was dropped", idx[149].ID)
+	}
+	// A single flat page must still parse (the non-paginated shape).
+	flat, _ := json.Marshal(page(1, 3))
+	if got := len(parseCommentIndex(string(flat))); got != 3 {
+		t.Fatalf("flat array rows = %d, want 3", got)
+	}
+}
+
 // TestThreadToolReturnsIndexNotBodies pins that the thread result carries ids and
 // previews but NOT the full comment bodies — the separation that prevents the
 // aggregate-blob truncation.
