@@ -243,9 +243,14 @@ func TestTimeoutClassPositive(t *testing.T) {
 	if isTimeoutClass(context.Canceled) {
 		t.Error("context.Canceled must NOT classify as the timeout class")
 	}
-	// llmkit's named stall class must classify (its wording is "stream stalled").
-	if !isTimeoutClass(fmt.Errorf("LLM stream stalled: no chunk for 3m0s after 12 byte(s) of content")) {
-		t.Error("llmkit's stream-stall error must classify as the timeout class")
+	// llmkit's TYPED stall class must classify — via errors.As, not string matching
+	// of the library's wording (which llmkit is free to change).
+	if !isTimeoutClass(&llmkit.StallError{Idle: 3 * time.Minute, ContentBytes: 12}) {
+		t.Error("llmkit's typed StallError must classify as the timeout class")
+	}
+	// A wrapped StallError must also classify (errors.As unwraps).
+	if !isTimeoutClass(fmt.Errorf("turn failed: %w", &llmkit.StallError{Idle: time.Second})) {
+		t.Error("a wrapped StallError must classify as the timeout class")
 	}
 }
 
@@ -495,11 +500,18 @@ func TestGenerationBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rc.ReasoningEffort != defaultReasoningEffort {
-		t.Errorf("ReasoningEffort default = %q, want %q", rc.ReasoningEffort, defaultReasoningEffort)
+	// The QUALITY default is high thinking; max_tokens is the SHARED
+	// reasoning+answer budget and must be large enough that thinking cannot
+	// consume it (measured: a 16384 cap produced an empty completion with
+	// finish_reason=length). This pins both.
+	if rc.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort default = %q, want high (the quality default)", rc.ReasoningEffort)
 	}
 	if rc.MaxTokens != defaultMaxTokens {
 		t.Errorf("MaxTokens default = %d, want %d", rc.MaxTokens, defaultMaxTokens)
+	}
+	if defaultMaxTokens <= 65536 {
+		t.Errorf("defaultMaxTokens = %d, must be comfortably above what high thinking consumes", defaultMaxTokens)
 	}
 	lc := llmConfig(rc)
 	if lc.Params.Reasoning_effort != defaultReasoningEffort {
@@ -540,5 +552,85 @@ func TestGenerationBoundsDisable(t *testing.T) {
 	}
 	if rc.MaxTokens != defaultMaxTokens {
 		t.Errorf("invalid max tokens must keep the default, got %d", rc.MaxTokens)
+	}
+}
+
+// TestTemperatureConfigurable pins that AI_REVIEW_TEMPERATURE overrides the
+// default and reaches the wire params, and that an explicit 0 wins (0 is a
+// legitimate deterministic setting, not "unset").
+func TestTemperatureConfigurable(t *testing.T) {
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != reviewTemperature {
+		t.Fatalf("default temperature not applied: %v", lc.Params.Temperature)
+	}
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0.7")
+	rc, _, _ = parseReviewArgs(nil, nil)
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != 0.7 {
+		t.Fatalf("AI_REVIEW_TEMPERATURE not applied: %v", lc.Params.Temperature)
+	}
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0")
+	rc, _, _ = parseReviewArgs(nil, nil)
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != 0 {
+		t.Fatalf("explicit 0 must win, got %v", lc.Params.Temperature)
+	}
+}
+
+// TestDeterministicFailureFailsHard: an empty-completion error (a provider
+// budget/format decision) must NOT be blind-retried — the failing turn returns
+// after ONE attempt with a message naming the fix. This is the measured
+// amplifier: three identical re-issues of a doomed request wasted 2m52s.
+func TestDeterministicFailureFailsHard(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&n, 1)
+		// A reasoning-only turn with finish_reason=length: the exact prod shape.
+		sseChunkRaw(rw, `{"choices":[{"index":0,"delta":{"reasoning":"thinking hard"},"finish_reason":"length"}]}`)
+		sseDone(rw)
+	}))
+	defer srv.Close()
+	cfg := reviewConfig{Provider: "t", Model: "m", BaseURL: srv.URL, APIKey: "k",
+		MaxTurns: 4, StreamIdleTimeout: 5 * time.Second, RetryBackoff: time.Millisecond,
+		ToolResultMaxBytes: 4096, MaxTokens: 16384, ReasoningEffort: "high"}
+	_, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{fixture: "fx"})
+	if err == nil {
+		t.Fatal("an empty completion must fail the run")
+	}
+	if got := atomic.LoadInt32(&n); got != 1 {
+		t.Fatalf("the LLM endpoint was called %d times; a deterministic empty completion must be attempted ONCE, not blindly retried", got)
+	}
+	if !strings.Contains(err.Error(), "AI_REVIEW_MAX_TOKENS") {
+		t.Fatalf("the failure must name the knob that fixes it, got: %v", err)
+	}
+}
+
+// sseChunkRaw writes one raw SSE data line (a JSON object the caller supplies).
+func sseChunkRaw(rw http.ResponseWriter, payload string) {
+	rw.Header().Set("Content-Type", "text/event-stream")
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write([]byte("data: " + payload + "\n\n"))
+}
+
+// TestPRFromEventPathNoPullRequestDoesNotPanic: a workflow_dispatch event has no
+// `pull_request` object. Dereferencing it SIGSEGV'd during the bootstrap
+// self-test (measured live). A missing PR context returns 0, never a panic.
+func TestPRFromEventPathNoPullRequestDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "event.json")
+	if err := os.WriteFile(p, []byte(`{"action":"workflow_dispatch","inputs":{"pr-number":"1"},"repository":{"name":"x","owner":{"login":"o"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := prFromEventPath(p); got != 0 {
+		t.Fatalf("workflow_dispatch event must yield 0, got %d", got)
+	}
+	// A pull_request event still yields its number.
+	p2 := filepath.Join(dir, "pr.json")
+	if err := os.WriteFile(p2, []byte(`{"pull_request":{"number":42,"head":{"sha":"a"},"base":{"sha":"b"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := prFromEventPath(p2); got != 42 {
+		t.Fatalf("pull_request event must yield 42, got %d", got)
 	}
 }

@@ -90,14 +90,26 @@ type reviewConfig struct {
 	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
 	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
 	ToolResultMaxBytes int
-	// ReasoningEffort bounds the model's reasoning depth (env
-	// AI_REVIEW_REASONING_EFFORT; "low" default, "" disables). A reasoning model
-	// given the full validator context otherwise generates megabytes of thinking
-	// and blows the time budget.
+	// ReasoningEffort sets the thinking depth (env AI_REVIEW_REASONING_EFFORT;
+	// default "high" — the eval QUALITY default; never reduce it to save time).
+	// Ollama Cloud's OpenAI-compatible endpoint accepts high|medium|low|max|none.
+	//
+	// CRITICAL — max_tokens is a SHARED budget for reasoning + answer. A high
+	// thinking model can spend MORE than a small budget thinking and then return
+	// an empty completion with finish_reason=length (measured: reasoning alone
+	// consumed 57KB/66KB/64KB of a 16384-token cap, three attempts, 2m52s). So
+	// ReasoningEffort and MaxTokens must be raised TOGETHER; MaxTokens must leave
+	// ample room above what thinking can consume.
 	ReasoningEffort string
 	// MaxTokens bounds the completion, reasoning + answer (env
-	// AI_REVIEW_MAX_TOKENS; 0 disables).
+	// AI_REVIEW_MAX_TOKENS; 0 disables). Default defaultMaxTokens (see the
+	// reasoning-budget note above). The provider rejects a value above the
+	// model's maximum output tokens.
 	MaxTokens int64
+	// Temperature is the sampling temperature (env AI_REVIEW_TEMPERATURE; default
+	// reviewTemperature). Low for a deterministic verdict; configurable so an
+	// operator can tune it without a rebuild.
+	Temperature *float64
 	// RetryBackoff is the base backoff between re-issues of a failed turn
 	// request. Not env-configurable: it is a scheduling constant, not a policy
 	// knob (tests set it directly).
@@ -106,6 +118,17 @@ type reviewConfig struct {
 	// by every pass and every turn (a per-request id would defeat the routing it
 	// exists for). Minted once in parseReviewArgs; empty disables the header.
 	SessionID string
+	// Debug turns on the full diagnostic trace (env AI_REVIEW_DEBUG): per-turn
+	// wall-clock + time-to-first-chunk, token usage (prompt/completion/reasoning),
+	// finish_reason, tool name/arg/result byte sizes, per-request context bytes,
+	// and the model's REASONING text. RCA requires the reasoning and the timings
+	// to be observable; without this the engine emitted only three aggregate lines
+	// and a 7m35s run could not be attributed to a turn.
+	Debug bool
+	// DebugReasoning additionally prints the full reasoning text per turn. It is a
+	// separate knob because reasoning can be megabytes; the timing/usage trace is
+	// cheap and safe to leave on, the reasoning dump is opt-in.
+	DebugReasoning bool
 }
 
 func (c *reviewConfig) owner() string { return strings.SplitN(c.Repo, "/", 2)[0] }
@@ -183,11 +206,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		}
 	}
 	if v, ok := os.LookupEnv("AI_REVIEW_REASONING_EFFORT"); ok {
-		cfg.ReasoningEffort = v // "" explicitly disables the bound
+		cfg.ReasoningEffort = v // "" explicitly disables thinking
 	}
 	if v := getenvAny("AI_REVIEW_MAX_TOKENS"); v != "" {
 		if n, e := parseInt64(v); e == nil && n > 0 {
 			cfg.MaxTokens = n
+		}
+	}
+	if v := getenvAny("AI_REVIEW_TEMPERATURE"); v != "" {
+		if f, e := strconv.ParseFloat(v, 64); e == nil {
+			cfg.Temperature = &f
 		}
 	}
 	if v := getenvAny("AI_REVIEW_MAX_TURNS"); v != "" {
@@ -199,6 +227,16 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		if n, e := parseInt(v); e == nil && n > 0 {
 			cfg.MaxAttempts = n
 		}
+	}
+	// Debug: a bare env flag (set to any non-empty value). AI_REVIEW_DEBUG gives
+	// the timing/usage/tool trace; AI_REVIEW_DEBUG_REASONING additionally dumps the
+	// full reasoning text. Both are read via LookupEnv so an explicit empty value
+	// leaves them off (the same empty-is-unset convention the other knobs use).
+	if _, ok := os.LookupEnv("AI_REVIEW_DEBUG"); ok {
+		cfg.Debug = truthyEnv(getenvAny("AI_REVIEW_DEBUG"))
+	}
+	if _, ok := os.LookupEnv("AI_REVIEW_DEBUG_REASONING"); ok {
+		cfg.DebugReasoning = truthyEnv(getenvAny("AI_REVIEW_DEBUG_REASONING"))
 	}
 	cfg.PromptPath = getenvAny("REVIEW_PROMPT_PATH")
 	cfg.PlanPath = getenvAny("REVIEW_PLAN_PATH")
@@ -310,6 +348,15 @@ func prFromEventPath(p string) int {
 	}
 	var ev ghEvent
 	if json.Unmarshal(raw, &ev) != nil {
+		return 0
+	}
+	// A workflow_dispatch (or any non-PR) event has no `pull_request` object, so
+	// ev.PullRequest is nil. Dereferencing it panicked (measured: a SIGSEGV in
+	// prFromEventPath during the bootstrap self-test on a workflow_dispatch run,
+	// which crashed `charly review --self-test`). A missing PR context is not an
+	// error here — it just means this event cannot supply a PR number; the caller
+	// falls back to PR_NUMBER / the flag and reports "no pull request context".
+	if ev.PullRequest == nil {
 		return 0
 	}
 	return ev.PullRequest.Number
@@ -520,6 +567,13 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 		review, err := agentLoopOnce(ctx, cfg, prompt, tools)
 		if err != nil {
 			fmt.Println("plugin-review: pass " + fmt.Sprint(pass) + " failed: " + err.Error())
+			// A DETERMINISTIC failure is reported immediately and NOT re-run: a
+			// whole-loop pass would reproduce the exact same outcome and burn the
+			// wall clock. The error already names the fix. Fail hard with a clear
+			// class so the run ends fast instead of retrying or hanging.
+			if isDeterministicClass(err) {
+				return "", fmt.Errorf("inconclusive: the model produced no answer and this is not retryable (%w)", err)
+			}
 			// A transport failure is NOT a reason to re-run the whole loop: the
 			// failing turn already carries its own re-issues. Report the distinct
 			// inconclusive class instead (the gate must never read it as a BLOCK).
@@ -549,10 +603,18 @@ func runAgentLoop(ctx context.Context, cfg reviewConfig, prompt string, tools to
 }
 
 // chatTurn issues ONE turn request through llmkit, re-issuing it on failure with
-// the SAME conversation state. Re-issuing is safe and deterministic: all four
-// review tools are read-only gh-api GETs and the loop is the only writer of the
+// the SAME conversation state. Re-issuing is safe and deterministic: all review
+// tools are read-only gh-api GETs and the loop is the only writer of the
 // conversation, so a retried turn cannot duplicate a side effect or lose
 // accumulated context. This is the ONE retry site for a failed turn.
+//
+// A DETERMINISTIC failure is NOT re-issued: an EmptyCompletionError with
+// finish_reason=length is a budget decision — the reasoning consumed the whole
+// max_tokens budget before any answer — and re-sending the identical request
+// cannot change it (measured: 3 identical attempts produced 57KB/66KB/64KB of
+// reasoning and no answer, wasting 2m52s). It fails HARD and immediately with a
+// message naming the exact fix (raise AI_REVIEW_MAX_TOKENS), so the run ends in
+// seconds with a clear cause instead of hanging or burning the wall clock.
 func chatTurn(ctx context.Context, cfg reviewConfig, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
 	backoff := cfg.RetryBackoff
 	if backoff <= 0 {
@@ -565,6 +627,11 @@ func chatTurn(ctx context.Context, cfg reviewConfig, llm llmkit.Config, messages
 			return msg, nil
 		}
 		lastErr = err
+		if isDeterministicClass(err) {
+			// No retry: the same request yields the same outcome. Report the cause
+			// and the knob that fixes it.
+			return llmkit.Message{}, fmt.Errorf("the model produced no answer and retrying it is pointless (%w); raise AI_REVIEW_MAX_TOKENS (currently %d) so the reasoning budget leaves room for the answer, or lower AI_REVIEW_REASONING_EFFORT", err, cfg.MaxTokens)
+		}
 		fmt.Printf("plugin-review: turn request attempt %d/%d failed: %v\n", attempt, maxTurnRequestAttempts, err)
 		if attempt < maxTurnRequestAttempts {
 			if err := sleepCtx(ctx, time.Duration(attempt)*backoff); err != nil {
@@ -573,6 +640,15 @@ func chatTurn(ctx context.Context, cfg reviewConfig, llm llmkit.Config, messages
 		}
 	}
 	return llmkit.Message{}, lastErr
+}
+
+// isDeterministicClass reports whether an error cannot be fixed by re-issuing
+// the IDENTICAL request. An EmptyCompletionError is deterministic: the provider
+// answered and made a budget/format decision (finish_reason), so retrying the
+// same parameters reproduces it exactly.
+func isDeterministicClass(err error) bool {
+	var ece *llmkit.EmptyCompletionError
+	return errors.As(err, &ece)
 }
 
 // sleepCtx waits for d but abandons the wait as soon as ctx is done, so a
@@ -600,11 +676,16 @@ func isTimeoutClass(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
-	// llmkit's named stall class ("LLM stream stalled: no chunk for …") plus the
-	// transport-level timeouts that reach the caller unwrapped.
+	// llmkit's TYPED stall class, plus the transport-level timeouts that reach the
+	// caller unwrapped (the SDK's own net/http errors, which llmkit does not wrap
+	// in a named type). Prefer the typed check: string-matching a shared library's
+	// message couples this caller to wording that library is free to change.
+	var stall *llmkit.StallError
+	if errors.As(err, &stall) {
+		return true
+	}
 	msg := err.Error()
-	return strings.Contains(msg, "stream stalled") ||
-		strings.Contains(msg, "context deadline exceeded") ||
+	return strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "Client.Timeout exceeded") ||
 		strings.Contains(msg, "timeout awaiting response headers") ||
 		strings.Contains(msg, "i/o timeout")
@@ -618,24 +699,51 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 		{Role: "system", Content: llmkit.Strptr(prompt)},
 		{Role: "user", Content: llmkit.Strptr(userMsg)},
 	}
+	loopStart := time.Now()
+	// The debug trace exists so a long run is ATTRIBUTABLE. Measured on a real
+	// 7m35s run: the whole engine emitted three aggregate lines and no per-turn
+	// timing, so the time could not be assigned to a turn, a tool, or the model.
+	// With AI_REVIEW_DEBUG the loop emits, per turn, the wall time, the
+	// prompt/context byte size, the reasoning byte size (and the text when
+	// AI_REVIEW_DEBUG_REASONING is on), the finish reason, the token usage when
+	// the provider reports it, and per-tool name/arg/result byte sizes.
+	dbg := func(format string, a ...any) {
+		if cfg.Debug {
+			fmt.Printf("plugin-review[debug]: "+format+"\n", a...)
+		}
+	}
+	dbg("loop start — turns_max=%d tool_result_max_bytes=%d idle=%v attempt_timeout=%v reasoning_effort=%q max_tokens=%d system_prompt_bytes=%d",
+		cfg.MaxTurns, cfg.ToolResultMaxBytes, cfg.StreamIdleTimeout, cfg.AttemptTimeout, cfg.ReasoningEffort, cfg.MaxTokens, len(prompt))
 
 	for turn := 0; turn < cfg.MaxTurns; turn++ {
+		contextBytes := conversationBytes(messages)
+		turnStart := time.Now()
 		msg, err := chatTurn(ctx, cfg, llm, messages)
+		turnDur := time.Since(turnStart)
 		if err != nil {
+			dbg("turn %d FAILED after %v (context=%d bytes): %v", turn+1, turnDur, contextBytes, err)
 			return "", err
 		}
 		content := ""
 		if msg.Content != nil {
 			content = *msg.Content
 		}
+		dbg("turn %d done in %v — context_in=%d bytes content=%d reasoning=%d bytes finish_reason=%q usage=%s tool_calls=%d",
+			turn+1, turnDur, contextBytes, len(content), len(msg.Reasoning), msg.FinishReason, usageString(msg.Usage), len(msg.ToolCalls))
+		if cfg.DebugReasoning && msg.Reasoning != "" {
+			dbg("turn %d REASONING\n%s\n[plugin-review debug: end reasoning %d bytes]", turn+1, msg.Reasoning, len(msg.Reasoning))
+		}
 		messages = append(messages, msg)
 		if len(msg.ToolCalls) == 0 {
 			fmt.Printf("plugin-review: turn %d: final content len=%d\n", turn+1, len(content))
+			dbg("loop end — %d turn(s) in %v", turn+1, time.Since(loopStart))
 			return content, nil
 		}
 		fmt.Printf("plugin-review: turn %d: %d tool call(s)\n", turn+1, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
+			toolStart := time.Now()
 			out, err := tools.call(ctx, tc.Name, tc.Arguments)
+			toolDur := time.Since(toolStart)
 			if err != nil {
 				out = "{\"error\": " + jsonQuote(err.Error()) + "}"
 			}
@@ -645,16 +753,58 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 			// comment, so no single message can lose its tail to a cap — the RCA
 			// that made the trailing review round and sign-off invisible.
 			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
+			dbg("  tool %q args=%d bytes -> result=%d bytes (post-cap=%d) in %v", tc.Name, len(tc.Arguments), len(out), len(c), toolDur)
 			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(c)})
 		}
 	}
 	// turn budget exhausted: return the last assistant content with content, if any
+	dbg("loop end — turn budget exhausted after %v (MaxTurns=%d)", time.Since(loopStart), cfg.MaxTurns)
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].Content != nil {
 			return *messages[i].Content, nil
 		}
 	}
 	return "Conversation exceeded turn budget without a verdict.", nil
+}
+
+// conversationBytes is the total byte size of the conversation as it will be
+// sent (content + tool-call arguments + reasoning), so the debug trace shows
+// EXACTLY what drives per-turn cost. It is a diagnostic-only helper and never
+// affects what is sent.
+func conversationBytes(msgs []llmkit.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Content != nil {
+			n += len(*m.Content)
+		}
+		n += len(m.Reasoning)
+		for _, tc := range m.ToolCalls {
+			n += len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	return n
+}
+
+// usageString renders the provider token usage when reported, else "n/a". The
+// reasoning token count is the load-bearing one for the unbounded-generation
+// RCA — it is what distinguishes "the model thought for 40k tokens" from "the
+// prompt was simply large".
+func usageString(u *llmkit.Usage) string {
+	if u == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("prompt=%d completion=%d total=%d reasoning=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.ReasoningTokens)
+}
+
+// truthyEnv is the debug-flag predicate: "1", "true", "yes", "on" (any case) are
+// ON; everything else (including empty) is OFF. Using a predicate rather than a
+// bare non-empty check means AI_REVIEW_DEBUG=0 reads as OFF, not ON.
+func truthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // extractVerdict: the exact line-anchored regex + distinct-union from the action.
