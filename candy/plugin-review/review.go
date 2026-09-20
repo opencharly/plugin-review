@@ -492,11 +492,16 @@ type toolSet struct {
 // owner and repo separately (the verb:pr path needs them apart), and joining
 // them here is the single place the two representations meet. Passing the bare
 // repo name is the measured 404 class: /repos/<name>/pulls/<n> is not a route.
-func (t *toolSet) slug() string {
-	if t.owner == "" {
-		return t.repo
+//
+// An empty owner is NOT a legitimate unqualified path: the review engine's Repo
+// is always a full slug (--repo owner/repo or GITHUB_REPOSITORY), and ghkit
+// cannot build an owner-less /repos path. slug returns ok=false so the caller
+// fails loudly instead of silently re-creating the 404 class.
+func (t *toolSet) slug() (string, bool) {
+	if t.owner == "" || t.repo == "" {
+		return "", false
 	}
-	return t.owner + "/" + t.repo
+	return t.owner + "/" + t.repo, true
 }
 
 // recordFileIndex stores the full changed-file set the anti-skim guard checks.
@@ -559,12 +564,21 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 	if fx == "" && t.gh == nil && name != "" {
 		return "", fmt.Errorf("%s: no GitHub client is configured", name)
 	}
+	// Resolve the owner/repo slug ONCE for every GitHub-backed tool. A missing
+	// owner is a config error, never a silent bare-name path (the 404 class).
+	slug := ""
+	if fx == "" {
+		var ok bool
+		if slug, ok = t.slug(); !ok {
+			return "", fmt.Errorf("%s: no owner/repo context (the review engine requires a full owner/repo slug)", name)
+		}
+	}
 	switch name {
 	case "get_pr_files":
 		if fx != "" {
 			return readFixture(fx)
 		}
-		idx, err := t.gh.toolFiles(ctx, t.slug(), t.pr)
+		idx, err := t.gh.toolFiles(ctx, slug, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -588,7 +602,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		f, err := t.gh.toolFile(ctx, t.slug(), t.pr, a.Path)
+		f, err := t.gh.toolFile(ctx, slug, t.pr, a.Path)
 		if err != nil {
 			return "", err
 		}
@@ -599,7 +613,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		cs, err := t.gh.toolCommits(ctx, t.slug(), t.pr)
+		cs, err := t.gh.toolCommits(ctx, slug, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -609,7 +623,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		bd, err := t.gh.toolBody(ctx, t.slug(), t.pr)
+		bd, err := t.gh.toolBody(ctx, slug, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -619,7 +633,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		th, err := t.gh.toolThread(ctx, t.slug(), t.pr, t.headSHA, t.baseSHA, t.toolResultMaxBytes)
+		th, err := t.gh.toolThread(ctx, slug, t.pr, t.headSHA, t.baseSHA, t.toolResultMaxBytes)
 		if err != nil {
 			return "", err
 		}
@@ -640,7 +654,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		raw, err := t.gh.toolComment(ctx, t.slug(), a.ID)
+		raw, err := t.gh.toolComment(ctx, slug, a.ID)
 		if err != nil {
 			return "", err
 		}
@@ -649,7 +663,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		m, err := t.gh.toolMeta(ctx, t.slug(), t.pr)
+		m, err := t.gh.toolMeta(ctx, slug, t.pr)
 		if err != nil {
 			return "", err
 		}
