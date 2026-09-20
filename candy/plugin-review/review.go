@@ -49,22 +49,13 @@ const (
 	// conversation (the general cap). Tool output is the context-growth trigger:
 	// get_pr_diff is up to 96 KiB and get_pr_thread up to 100 comments x 24 KiB.
 	defaultToolResultMaxBytes = 64 << 10
-	// defaultDiffResultMaxBytes caps the get_pr_diff result SPECIFICALLY, tighter
-	// than the general cap.
-	//
-	// MEASURED (2026-09-20): the DIFF is the reasoning-spiral trigger. A ~28 KiB
-	// diff tool result drove deepseek-v4.1-flash into a reasoning spiral that
-	// consumed the ENTIRE output budget and returned content=0 with
-	// finish_reason=length, at every level and every cap tried: high consumed
-	// 507 KB / 741 KB / 726 KB of reasoning over 13–19 min, medium 474 KB, and even
-	// the model's maximum 393216 tokens was exhausted. Capping the SAME diff at
-	// ≤16 KiB makes high-thinking turns complete reliably in seconds (measured:
-	// 12 / 19 / 20 s). Non-diff payloads do NOT spiral at the same sizes — a
-	// 37 KiB comment INDEX produced 6 KB of reasoning, and a 30 KiB code blob
-	// 2 KB — so the cap is applied to the diff ONLY and the index stays lossless.
-	// (env AI_REVIEW_DIFF_MAX_BYTES). get_pr_diff is a tool NAME here, not a
-	// provider switch.
-	defaultDiffResultMaxBytes = 16 << 10
+	// defaultContextTokens is the model's context window (env
+	// AI_REVIEW_CONTEXT_TOKENS). deepseek-v4.1-flash advertises 1,048,576 in
+	// models.dev; the provider is authoritative, so it is env-overridable.
+	defaultContextTokens = 1 << 20
+	// defaultContextMarginTokens is the headroom kept below the context window so
+	// the guard trips BEFORE the provider does (env AI_REVIEW_CONTEXT_MARGIN).
+	defaultContextMarginTokens = 16 << 10
 	// defaultRetryBackoff is the base backoff between re-issues of a FAILED TURN
 	// request (attempt x base = 5s then 10s — the action's original schedule).
 	defaultRetryBackoff = 5 * time.Second
@@ -106,11 +97,13 @@ type reviewConfig struct {
 	// ToolResultMaxBytes caps ONE tool result before it enters the conversation
 	// (env AI_REVIEW_TOOL_RESULT_MAX_BYTES).
 	ToolResultMaxBytes int
-	// DiffResultMaxBytes caps the get_pr_diff result specifically (env
-	// AI_REVIEW_DIFF_MAX_BYTES). The diff is the measured reasoning-spiral
-	// trigger, so it is bounded tighter than the general tool-result cap while
-	// non-diff payloads (the comment index) stay lossless.
-	DiffResultMaxBytes int
+	// ContextTokens is the model's context window (env AI_REVIEW_CONTEXT_TOKENS).
+	// The mechanical PR-size guard fails hard when input + output reserve exceeds
+	// it, so a PR too large to review whole is refused, never silently truncated.
+	ContextTokens int
+	// ContextMarginTokens is the headroom kept below ContextTokens (env
+	// AI_REVIEW_CONTEXT_MARGIN).
+	ContextMarginTokens int
 	// ReasoningEffort sets the thinking depth (env AI_REVIEW_REASONING_EFFORT;
 	// default "high" — the eval QUALITY default; never reduce it to save time).
 	// Ollama Cloud's OpenAI-compatible endpoint accepts high|medium|low|max|none.
@@ -189,8 +182,8 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 		Provider: defaultProvider, Model: defaultModel, BaseURL: defaultBaseURL,
 		MaxTurns: defaultMaxTurns, AttemptTimeout: defaultAttemptTimeout,
 		StreamIdleTimeout: defaultStreamIdleTimeout, ToolResultMaxBytes: defaultToolResultMaxBytes,
-		DiffResultMaxBytes: defaultDiffResultMaxBytes,
-		ReasoningEffort:    defaultReasoningEffort, MaxTokens: defaultMaxTokens,
+		ContextTokens: defaultContextTokens, ContextMarginTokens: defaultContextMarginTokens,
+		ReasoningEffort: defaultReasoningEffort, MaxTokens: defaultMaxTokens,
 		RetryBackoff: defaultRetryBackoff,
 		MaxAttempts:  defaultMaxAttempts,
 		SessionID:    reviewSessionID(),
@@ -227,9 +220,14 @@ func parseReviewArgs(args []string, environ []string) (reviewConfig, string, err
 			cfg.ToolResultMaxBytes = n
 		}
 	}
-	if v := getenvAny("AI_REVIEW_DIFF_MAX_BYTES"); v != "" {
+	if v := getenvAny("AI_REVIEW_CONTEXT_TOKENS"); v != "" {
 		if n, e := parseInt(v); e == nil && n > 0 {
-			cfg.DiffResultMaxBytes = n
+			cfg.ContextTokens = n
+		}
+	}
+	if v := getenvAny("AI_REVIEW_CONTEXT_MARGIN"); v != "" {
+		if n, e := parseInt(v); e == nil && n > 0 {
+			cfg.ContextMarginTokens = n
 		}
 	}
 	if v, ok := os.LookupEnv("AI_REVIEW_REASONING_EFFORT"); ok {
@@ -409,7 +407,7 @@ func runReviewEngine(ctx context.Context, cfg reviewConfig) (string, error) {
 	gh := newGHClient()
 	headSHA, baseSHA := "", ""
 	// resolve head/base from meta once (cheap) so thread + user prompt carry them
-	if m, err := gh.toolMeta(ctx, cfg.owner(), cfg.repo(), cfg.PR); err == nil {
+	if m, err := gh.toolMeta(ctx, cfg.Repo, cfg.PR); err == nil {
 		headSHA, baseSHA = m.HeadSHA, m.BaseSHA
 	}
 	deps := toolSet{gh: gh, owner: cfg.owner(), repo: cfg.repo(), pr: cfg.PR, headSHA: headSHA, baseSHA: baseSHA,
@@ -434,7 +432,7 @@ func emitReviewEffects(ctx context.Context, cfg reviewConfig, body string) error
 	if cfg.PR != 0 && cfg.Repo != "" {
 		runURL := cfg.ServerURL + "/" + cfg.RepoEnv + "/actions/runs/" + cfg.RunID
 		footer := fmt.Sprintf("\n\n---\n%s/%s — action-review.\n\n[View action run](%s)", cfg.Provider, cfg.Model, runURL)
-		if err := newGHClient().postComment(ctx, cfg.owner(), cfg.repo(), cfg.PR, body+footer); err != nil {
+		if err := newGHClient().postComment(ctx, cfg.Repo, cfg.PR, body+footer); err != nil {
 			fmt.Println("plugin-review: comment post failed (non-fatal): " + err.Error())
 		}
 	}
@@ -480,11 +478,58 @@ type toolSet struct {
 	// per-comment budget (so the model knows how much of a large comment
 	// get_pr_comment will return). Zero → the engine default.
 	toolResultMaxBytes int
+	// fileIndex is the full changed-file set from get_pr_files; filesRead is the
+	// subset fetched via get_pr_file. Together they MECHANICALLY enforce "read
+	// every changed file in full": a verdict is refused until filesRead covers
+	// fileIndex (Phase C anti-skim guard).
+	fileIndex   []string
+	fileIndexed bool
+	filesRead   map[string]bool
+}
+
+// recordFileIndex stores the full changed-file set the anti-skim guard checks.
+func (t *toolSet) recordFileIndex(idx prFileIndex) {
+	t.fileIndexed = true
+	t.fileIndex = t.fileIndex[:0]
+	for _, f := range idx.Files {
+		t.fileIndex = append(t.fileIndex, f.Path)
+	}
+}
+
+// recordFileRead marks one file as read in full.
+func (t *toolSet) recordFileRead(path string) {
+	if t.filesRead == nil {
+		t.filesRead = map[string]bool{}
+	}
+	t.filesRead[path] = true
+}
+
+// unreadFiles returns the changed files NOT yet fetched via get_pr_file. Empty
+// when the index was never read (the guard then cannot enforce — the prompt and
+// the file-index tool description require it, and this returns empty so a run
+// that never calls get_pr_files is not spuriously failed). It returns the index
+// itself before the index is read only when the index WAS read.
+func (t *toolSet) unreadFiles() []string {
+	if !t.fileIndexed {
+		return nil
+	}
+	var out []string
+	for _, p := range t.fileIndex {
+		if !t.filesRead[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // commentArgs is the parsed argument object for get_pr_comment.
 type commentArgs struct {
 	ID int `json:"id"`
+}
+
+// fileArgs is the parsed argument object for get_pr_file.
+type fileArgs struct {
+	Path string `json:"path"`
 }
 
 // call dispatches one tool by name. args is the raw tool-call argument JSON
@@ -496,17 +541,53 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 	if t.fixture != "" {
 		fx = filepath.Join("fixtures", t.fixture+"-"+name+".json")
 	}
+	// A tool that needs GitHub with no client is a CLEAR error, never a nil
+	// dereference (R1: a test/local construction without a client must not crash
+	// the run).
+	if fx == "" && t.gh == nil && name != "" {
+		return "", fmt.Errorf("%s: no GitHub client is configured", name)
+	}
 	switch name {
-	case "get_pr_diff":
+	case "get_pr_files":
 		if fx != "" {
 			return readFixture(fx)
 		}
-		return t.gh.toolDiff(ctx, t.owner, t.repo, t.pr)
+		idx, err := t.gh.toolFiles(ctx, t.repo, t.pr)
+		if err != nil {
+			return "", err
+		}
+		// Record the index so the anti-skim guard knows the full changed-file set
+		// (Phase C): a verdict is refused until every one of these is read.
+		t.recordFileIndex(idx)
+		b, _ := json.Marshal(idx)
+		return string(b), nil
+	case "get_pr_file":
+		// Argument validation FIRST (never a silent fallback): a missing path is
+		// a tool error in every mode.
+		var a fileArgs
+		if strings.TrimSpace(args) != "" {
+			if err := json.Unmarshal([]byte(args), &a); err != nil {
+				return "", fmt.Errorf("get_pr_file: invalid arguments %q: %w", args, err)
+			}
+		}
+		if strings.TrimSpace(a.Path) == "" {
+			return "", fmt.Errorf("get_pr_file: a file path is required (read the get_pr_files index for the exact paths)")
+		}
+		if fx != "" {
+			return readFixture(fx)
+		}
+		f, err := t.gh.toolFile(ctx, t.repo, t.pr, a.Path)
+		if err != nil {
+			return "", err
+		}
+		t.recordFileRead(a.Path)
+		b, _ := json.Marshal(f)
+		return string(b), nil
 	case "get_pr_commits":
 		if fx != "" {
 			return readFixture(fx)
 		}
-		cs, err := t.gh.toolCommits(ctx, t.owner, t.repo, t.pr)
+		cs, err := t.gh.toolCommits(ctx, t.repo, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -516,7 +597,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		bd, err := t.gh.toolBody(ctx, t.owner, t.repo, t.pr)
+		bd, err := t.gh.toolBody(ctx, t.repo, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -526,7 +607,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		th, err := t.gh.toolThread(ctx, t.owner, t.repo, t.pr, t.headSHA, t.baseSHA, t.toolResultMaxBytes)
+		th, err := t.gh.toolThread(ctx, t.repo, t.pr, t.headSHA, t.baseSHA, t.toolResultMaxBytes)
 		if err != nil {
 			return "", err
 		}
@@ -547,7 +628,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		raw, err := t.gh.toolComment(ctx, t.owner, t.repo, a.ID)
+		raw, err := t.gh.toolComment(ctx, t.repo, a.ID)
 		if err != nil {
 			return "", err
 		}
@@ -556,7 +637,7 @@ func (t *toolSet) call(ctx context.Context, name, args string) (string, error) {
 		if fx != "" {
 			return readFixture(fx)
 		}
-		m, err := t.gh.toolMeta(ctx, t.owner, t.repo, t.pr)
+		m, err := t.gh.toolMeta(ctx, t.repo, t.pr)
 		if err != nil {
 			return "", err
 		}
@@ -718,6 +799,29 @@ func isTimeoutClass(err error) bool {
 		strings.Contains(msg, "i/o timeout")
 }
 
+// checkContextBudget is the mechanical, fail-closed PR-size limit: input tokens
+// (the provider's REAL count for the turn just sent) + the output reserve must
+// leave headroom inside the model's context window. When they do not, the review
+// CANNOT see the whole PR in one context, so it fails HARD with an actionable
+// class — never a silent truncation (which would blind the gate to a diff past
+// the cut). The reserve is MaxTokens (the shared reasoning+answer budget).
+func checkContextBudget(cfg reviewConfig, promptTokens int) error {
+	contextTokens := cfg.ContextTokens
+	if contextTokens <= 0 {
+		contextTokens = defaultContextTokens
+	}
+	margin := cfg.ContextMarginTokens
+	if margin <= 0 {
+		margin = defaultContextMarginTokens
+	}
+	used := promptTokens + int(cfg.MaxTokens) + margin
+	if used > contextTokens {
+		return fmt.Errorf("inconclusive: PR too large to review in one context — the input is %d tokens and the output reserve is %d, exceeding the %d-token context window (with a %d-token margin). This is NOT a review verdict; split the PR into smaller PRs, or raise AI_REVIEW_CONTEXT_TOKENS if the model's window is larger",
+			promptTokens, cfg.MaxTokens, contextTokens, margin)
+	}
+	return nil
+}
+
 func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools toolSet) (string, error) {
 	llm := llmConfig(cfg)
 	userMsg := fmt.Sprintf("Review pull request #%d in %s. Current head %s vs base %s. Use the read-only tools to verify the CURRENT state, then produce your review ending in exactly 'Verdict: PASS' or 'Verdict: BLOCK' on the final line.",
@@ -761,7 +865,30 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 			dbg("turn %d REASONING\n%s\n[plugin-review debug: end reasoning %d bytes]", turn+1, msg.Reasoning, len(msg.Reasoning))
 		}
 		messages = append(messages, msg)
+
+		// PHASE D — context guard (fail-closed). The provider reports the REAL
+		// prompt-token count for the turn just sent; if input + the output reserve
+		// leaves no room, the review cannot be completed in one context. Fail HARD
+		// with an actionable class instead of truncating (which would blind the
+		// gate) or looping until the wall clock.
+		if msg.Usage != nil && msg.Usage.PromptTokens > 0 {
+			if err := checkContextBudget(cfg, msg.Usage.PromptTokens); err != nil {
+				return "", err
+			}
+		}
+
 		if len(msg.ToolCalls) == 0 {
+			// PHASE C — anti-skim enforcement. A verdict is REFUSED until every
+			// changed file in the get_pr_files index has been read via
+			// get_pr_file. If any remain, inject a message naming them and force
+			// another turn — a run cannot pass (or block) on a diff it skimmed.
+			if unread := tools.unreadFiles(); len(unread) > 0 {
+				fmt.Printf("plugin-review: turn %d produced a verdict but %d changed file(s) are unread — refusing it and demanding a full read\n", turn+1, len(unread))
+				dbg("anti-skim: unread files %v", unread)
+				messages = append(messages, llmkit.Message{Role: "user", Content: llmkit.Strptr(
+					"REFUSED: you have not read every changed file. Before a verdict you MUST call get_pr_file for EACH of these unread paths from the get_pr_files index: " + strings.Join(unread, ", ") + ". Read them, then give your verdict.")})
+				continue
+			}
 			fmt.Printf("plugin-review: turn %d: final content len=%d\n", turn+1, len(content))
 			dbg("loop end — %d turn(s) in %v", turn+1, time.Since(loopStart))
 			return content, nil
@@ -780,15 +907,12 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 			// can lose its tail to a cap — the RCA that made the trailing review
 			// round and sign-off invisible.
 			//
-			// The DIFF gets a tighter, separate cap: it is the measured
-			// reasoning-spiral trigger (see defaultDiffResultMaxBytes), while the
-			// index and comment payloads stay under the general cap. The two are
-			// independent so tightening the diff NEVER truncates the thread index.
-			cap := cfg.ToolResultMaxBytes
-			if tc.Name == "get_pr_diff" && cfg.DiffResultMaxBytes > 0 && cfg.DiffResultMaxBytes < cap {
-				cap = cfg.DiffResultMaxBytes
-			}
-			c := truncateToolResult(out, cap)
+			// Per-file delivery means no tool result is the consolidated diff
+			// anymore, so ONE general cap suffices. A file whose patch alone
+			// exceeds it is a genuine anomaly (the reviewer cannot see it whole) —
+			// the context guard catches that class; the announced cut here is the
+			// per-MESSAGE memory bound, not a policy that hides a whole diff.
+			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
 			dbg("  tool %q args=%d bytes -> result=%d bytes (post-cap=%d) in %v", tc.Name, len(tc.Arguments), len(out), len(c), toolDur)
 			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(c)})
 		}

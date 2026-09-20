@@ -8,7 +8,10 @@ import (
 func TestToolSetFixtures(t *testing.T) {
 	tools := toolSet{fixture: "fx"}
 	cases := []struct{ name, args, want string }{
-		{"get_pr_diff", "", "diff --git a/README.md"},
+		// The diff is delivered per file: get_pr_files is the INDEX, get_pr_file
+		// is ONE file's patch.
+		{"get_pr_files", "", "file_count"},
+		{"get_pr_file", `{"path":"big.go"}`, "diff --git a/big.go"},
 		{"get_pr_commits", "", "alice"},
 		// The thread tool is the INDEX only — it must NOT carry comment bodies.
 		{"get_pr_thread", "", "comment_count"},

@@ -51,7 +51,14 @@ type reviewToolSpec struct {
 var reviewTools = []reviewToolSpec{
 	{name: "get_pr_meta", description: "PR metadata: title, state, mergeable, head/base sha, file counts. Call this FIRST."},
 	{name: "get_pr_body", description: "The CURRENT live PR/issue body as its own message — authoritative; it supersedes anything an older comment said. Read as a single unit, never bundled with the comments."},
-	{name: "get_pr_diff", description: "CURRENT unified diff (head vs base) as its own message."},
+	{name: "get_pr_files", description: "The changed-FILE INDEX: path, status, additions, deletions and patch size for EVERY changed file, plus file_count and total_patch_bytes. The DIFFS are NOT here — call get_pr_file for EACH path to read its full patch. Read this index FIRST, then read EVERY file it lists (the run is refused a verdict until you have)."},
+	{name: "get_pr_file", description: "Read ONE changed file's FULL patch (its unified diff) by path, as its own message. This is how you read the diff: ONE FILE PER CALL, for EVERY file in the get_pr_files index. Reading one file per message is required so a large multi-file diff is never truncated.", params: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "A path from the get_pr_files files[] index (exact string)."},
+		},
+		"required": []string{"path"},
+	}},
 	{name: "get_pr_commits", description: "Commit history of this PR (sha, message, author) — read commit messages since the last review here."},
 	{name: "get_pr_thread", description: "The comment INDEX: id/author/date/size/preview for every comment, plus the per-comment byte cap. Comment BODIES are NOT included — call get_pr_comment with a row's id to read one comment as its own message. Older comments are stale until re-verified."},
 	{name: "get_pr_comment", description: "Read ONE comment by id (from get_pr_thread's index) as its own message: its full body plus author and date. Reading comments ONE AT A TIME is the intended path — it keeps each message small so nothing is truncated.", params: map[string]any{
