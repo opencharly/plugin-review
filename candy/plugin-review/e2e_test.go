@@ -18,9 +18,12 @@ import (
 func TestReviewE2E(t *testing.T) {
 	dir := t.TempDir()
 
-	// stub gh: serves the four tools from committed fixtures + accepts comment POSTs
+	// stub gh: serves the read-only tools from committed fixtures + accepts comment
+	// POSTs. NOTE the ordering: the single-comment endpoint
+	// (/issues/comments/<id>) is matched BEFORE the list endpoint
+	// (/issues/<pr>/comments), and the list endpoint BEFORE the issue endpoint.
 	stub := filepath.Join(dir, "gh")
-	ghScript := "#!/bin/bash\n# stub gh for e2e — serves fixture payloads, records comment posts\nFIX=\"${REVIEW_FIXTURES_DIR}/fx\"\nfor a in \"$@\"; do\n  case \"$a\" in\n    *comments*) cat \"${FIX}-get_pr_thread.json\"; exit 0;;\n    *application/vnd.github.diff*) cat \"${FIX}-get_pr_diff.json\"; exit 0;;\n    */commits*) cat \"${FIX}-get_pr_commits.json\"; exit 0;;\n    */pulls/*) cat \"${FIX}-get_pr_meta.json\"; exit 0;;\n    */issues/*) cat \"${FIX}-get_pr_thread.json\"; exit 0;;\n    --method) echo '{}'; exit 0;;\n  esac\ndone\necho '{}'\n"
+	ghScript := "#!/bin/bash\n# stub gh for e2e — serves fixture payloads, records comment posts\nFIX=\"${REVIEW_FIXTURES_DIR}/fx\"\nfor a in \"$@\"; do\n  case \"$a\" in\n    */issues/comments/*) cat \"${FIX}-get_pr_comment.json\"; exit 0;;\n    */issues/*/comments*) cat \"${FIX}-get_pr_thread.json\"; exit 0;;\n    *application/vnd.github.diff*) cat \"${FIX}-get_pr_diff.json\"; exit 0;;\n    */commits*) cat \"${FIX}-get_pr_commits.json\"; exit 0;;\n    */pulls/*) cat \"${FIX}-get_pr_meta.json\"; exit 0;;\n    */issues/*) cat \"${FIX}-get_pr_thread.json\"; exit 0;;\n    --method) echo '{}'; exit 0;;\n  esac\ndone\necho '{}'\n"
 	if err := os.WriteFile(stub, []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -33,11 +36,16 @@ func TestReviewE2E(t *testing.T) {
 		if req.URL.Path != "/chat/completions" {
 			t.Errorf("unexpected path %s", req.URL.Path)
 		}
-		var cr chatRequest
+		var cr struct {
+			Temperature *float64 `json:"temperature"`
+			Stream      bool     `json:"stream"`
+			ToolChoice  string   `json:"tool_choice"`
+			Tools       []any    `json:"tools"`
+		}
 		if err := json.NewDecoder(req.Body).Decode(&cr); err != nil {
 			t.Errorf("decode chat request: %v", err)
 		}
-		if cr.Temperature != 0.2 || len(cr.Tools) != 4 || cr.ToolChoice != "auto" {
+		if cr.Temperature == nil || *cr.Temperature != reviewTemperature || len(cr.Tools) != len(reviewTools) || cr.ToolChoice != "auto" {
 			t.Errorf("unexpected loop shape: temp=%v tools=%d choice=%q", cr.Temperature, len(cr.Tools), cr.ToolChoice)
 		}
 		if !cr.Stream {
@@ -45,11 +53,11 @@ func TestReviewE2E(t *testing.T) {
 		}
 		rw.Header().Set("Content-Type", "text/event-stream")
 		if calls == 1 {
-			writeSSEChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
+			sseChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
 		} else {
-			writeSSEChunk(rw, `{"choices":[{"delta":{"content":"## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"}}]}`)
+			sseChunk(rw, `{"choices":[{"delta":{"content":"## Review — PASS\n\nHead SHA: 0123456789ab\n\nVerdict: PASS\n"}}]}`)
 		}
-		writeSSEDone(rw)
+		sseDone(rw)
 	}))
 	defer llmSrv.Close()
 

@@ -3,7 +3,9 @@ package pluginreview
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -29,13 +31,25 @@ func newGHClient() *ghClient {
 // GITHUB_TOKEN so a workflow-injected github.token flows through without gh
 // auth setup.
 func (c *ghClient) api(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"api"}, args...)
-	var cmd *exec.Cmd
+	return c.apiFlags(ctx, nil, args...)
+}
+
+// apiPaginated runs `gh api --paginate --slurp <args...>`: gh follows the Link
+// header across every page and `--slurp` wraps the per-page arrays in ONE outer
+// array. This is what makes the comment index complete past the 100-row
+// per-page limit — a single `per_page=100` request silently drops a longer
+// thread's newest comments, the exact defect class this PR fixes.
+func (c *ghClient) apiPaginated(ctx context.Context, args ...string) (string, error) {
+	return c.apiFlags(ctx, []string{"--paginate", "--slurp"}, args...)
+}
+
+// apiFlags is the ONE gh-api invoker: it runs `gh api [flags...] <args...>`.
+func (c *ghClient) apiFlags(ctx context.Context, flags []string, args ...string) (string, error) {
+	full := append([]string{"api"}, flags...)
+	full = append(full, args...)
+	cmd := exec.Command("gh", full...)
 	if c.token != "" {
-		cmd = exec.Command("gh", full...)
 		cmd.Env = append(envWithToken(c.token), "NO_COLOR=1")
-	} else {
-		cmd = exec.Command("gh", full...)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -45,7 +59,7 @@ func (c *ghClient) api(ctx context.Context, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("gh api %s: %w: %s", strings.Join(args, " "), err, truncateStr(msg, 240))
+		return "", fmt.Errorf("gh api %s: %w: %s", strings.Join(full[1:], " "), err, truncateStr(msg, 240))
 	}
 	return stdout.String(), nil
 }
@@ -58,7 +72,7 @@ func envWithToken(token string) []string {
 	// Rebuild a minimal env: keep PATH/HTTP_PROXY style vars, inject GITHUB_TOKEN.
 	keep := []string{"PATH", "HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"}
 	for _, k := range keep {
-		v, ok := lookupEnv(k)
+		v, ok := os.LookupEnv(k)
 		if ok {
 			base = append(base, k+"="+v)
 		}
@@ -66,7 +80,7 @@ func envWithToken(token string) []string {
 	return append(base, "GITHUB_TOKEN="+token, "GH_TOKEN="+token)
 }
 
-// ---- the four read-only tools (port of pi-review-action's index.js tools) ----
+// ---- the read-only tools (port of pi-review-action's index.js tools) ----
 
 // toolDiff: CURRENT unified diff (head vs base), truncated to 96 KiB — same as the
 // action's truncate().
@@ -90,45 +104,83 @@ type prCommit struct {
 
 // toolCommits: PR commit history (sha, message, author) — same shape as the action.
 func (c *ghClient) toolCommits(ctx context.Context, owner, repo string, pr int) ([]prCommit, error) {
-	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, pr))
+	raw, err := c.apiPaginated(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, pr))
 	if err != nil {
 		return nil, err
 	}
 	return parseCommits(raw)
 }
 
-type prThread struct {
-	HeadSHA                    string      `json:"head_sha"`
-	BaseSHA                    string      `json:"base_sha"`
-	CurrentBodyIsAuthoritative bool        `json:"current_body_is_authoritative"`
-	CurrentBody                string      `json:"current_body"`
-	Comments                   []prComment `json:"comments"`
-}
-
-type prComment struct {
+// commentMeta is the compact INDEX row for one comment: metadata + a short
+// preview, never the body. The index therefore stays small and is delivered
+// complete; a body is fetched on demand by id (get_pr_comment).
+type commentMeta struct {
 	ID        int    `json:"id"`
 	Author    string `json:"author"`
 	CreatedAt string `json:"created_at"`
-	Body      string `json:"body"`
+	Bytes     int    `json:"bytes"`
+	Preview   string `json:"preview"`
 }
 
-// toolThread: CURRENT live issue body (authoritative) + every prior comment,
-// comments truncated to 24 KiB each — same as the action.
-func (c *ghClient) toolThread(ctx context.Context, owner, repo string, pr int, headSHA, baseSHA string) (prThread, error) {
-	body := ""
-	if raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, pr)); err == nil {
-		body = parseIssueBody(raw)
-	}
-	comments := []prComment{}
-	if rawCs, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, pr)); err == nil {
-		comments = parseComments(rawCs)
+// prThread is the comment INDEX — one compact row per comment. It deliberately
+// carries NO bodies: the PR body is get_pr_body and each comment body is
+// get_pr_comment, so no single tool message can lose its tail to the per-message
+// cap (RCA: the prior aggregate body+all-comments blob exceeded the cap and its
+// tail — the trailing review round and the maintainer sign-off — was
+// structurally invisible to the validator).
+type prThread struct {
+	HeadSHA      string        `json:"head_sha"`
+	BaseSHA      string        `json:"base_sha"`
+	Comments     []commentMeta `json:"comments"`
+	CommentCount int           `json:"comment_count"`
+	// MaxCommentBytes states the per-comment body cap so the model knows how much
+	// of a large comment get_pr_comment will return.
+	MaxCommentBytes int `json:"max_comment_bytes"`
+}
+
+// prBody is the PR description as its OWN message (bounded once at the cap).
+type prBody struct {
+	BodyIsAuthoritative bool   `json:"body_is_authoritative"`
+	Bytes               int    `json:"bytes"`
+	Body                string `json:"body"`
+}
+
+// toolThread returns the comment INDEX only (ids + metadata + preview), plus the
+// per-comment byte cap. The body is NOT here — see toolBody.
+func (c *ghClient) toolThread(ctx context.Context, owner, repo string, pr int, headSHA, baseSHA string, maxCommentBytes int) (prThread, error) {
+	index := []commentMeta{}
+	// --paginate --slurp: a single per_page=100 request would drop a longer
+	// thread's newest comments (the class this PR fixes), so follow EVERY page.
+	if rawCs, err := c.apiPaginated(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, pr)); err == nil {
+		index = parseCommentIndex(rawCs)
 	}
 	return prThread{
 		HeadSHA: headSHA, BaseSHA: baseSHA,
-		CurrentBodyIsAuthoritative: true,
-		CurrentBody:                body,
-		Comments:                   comments,
+		Comments: index, CommentCount: len(index), MaxCommentBytes: maxCommentBytes,
 	}, nil
+}
+
+// toolBody returns the CURRENT live issue/PR body as its own result. The body is
+// authoritative (the CURRENT body supersedes anything an older comment said).
+func (c *ghClient) toolBody(ctx context.Context, owner, repo string, pr int) (prBody, error) {
+	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, pr))
+	if err != nil {
+		return prBody{}, err
+	}
+	body := parseIssueBody(raw)
+	return prBody{BodyIsAuthoritative: true, Bytes: len(body), Body: body}, nil
+}
+
+// toolComment fetches ONE comment by its GitHub comment id and renders it as a
+// self-contained object (id + author + date + FULL body). It is the read path
+// that makes the thread index lossless: each comment travels as its own message
+// and is bounded exactly once, at the per-message cap.
+func (c *ghClient) toolComment(ctx context.Context, owner, repo string, id int) (json.RawMessage, error) {
+	raw, err := c.api(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, id))
+	if err != nil {
+		return nil, err
+	}
+	return parseOneComment(raw)
 }
 
 type prMeta struct {

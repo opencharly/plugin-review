@@ -2,7 +2,6 @@ package pluginreview
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -91,19 +90,12 @@ func runPlan(ctx context.Context, cfg reviewConfig) (int, error) {
 			ok = false
 		}
 	}
-	writeGHOutputs(full, ok && len(distinct) == 1, distinct)
-	if cfg.OutPath != "" {
-		_ = os.WriteFile(cfg.OutPath, []byte(full), 0o644)
+	// ONE effect emission for the whole run: $GITHUB_OUTPUT + --out + ONE comment.
+	// (runPlanStep's review step is the PURE engine, so nothing has posted yet.)
+	if err := emitReviewEffects(ctx, cfg, full); err != nil {
+		return 2, err
 	}
 	fmt.Println("plugin-review: plan done — steps=" + fmt.Sprint(len(plan.Steps)) + " verdicts=" + fmt.Sprint(distinct))
-	// ONE comment with the concatenated step output (B6 preserved; best-effort)
-	if cfg.PR != 0 && cfg.Repo != "" {
-		footer := fmt.Sprintf("\n\n---\n%s/%s — action-review.\n\n[View action run](%s/%s/actions/runs/%s)",
-			cfg.Provider, cfg.Model, cfg.ServerURL, cfg.RepoEnv, cfg.RunID)
-		if err := newGHClient().postComment(ctx, cfg.owner(), cfg.repo(), cfg.PR, full+footer); err != nil {
-			fmt.Println("plugin-review: comment post failed (non-fatal): " + err.Error())
-		}
-	}
 	if !ok {
 		return 2, fmt.Errorf("ambiguous verdict across required steps: %v", distinct)
 	}
@@ -120,16 +112,12 @@ func runPlanStep(ctx context.Context, cfg reviewConfig, step planStep) (string, 
 	cmdEnv := append(os.Environ(), env...)
 	switch step.Kind {
 	case "review":
-		subCfg := cfg
-		out := ""
-		exit, err := runCoreReview(ctx, subCfg)
+		// The PURE engine — no comment, no $GITHUB_OUTPUT. runPlan emits the
+		// run's single effect at the end (emitReviewEffects), so the plan path and
+		// the standalone path share ONE engine and fire each effect once.
+		out, err := runReviewEngine(ctx, cfg)
 		if err != nil {
-			return out, "", err
-		}
-		_ = exit
-		if cfg.OutPath != "" {
-			b, _ := os.ReadFile(cfg.OutPath)
-			out = string(b)
+			return "", "", err
 		}
 		_, distinct, n := extractVerdict(out)
 		verdict := ""
@@ -270,9 +258,3 @@ type yamlDecoder struct{ raw []byte }
 func (d *yamlDecoder) decodeStrict(v any) error {
 	return yamlUnmarshalStrict(d.raw, v)
 }
-
-// yamlUnmarshalStrict is implemented in yamlutil.go (kept separate so the file
-// reads like a spec; see there for the yaml.v3 wiring).
-func yamlUnmarshalStrict(raw []byte, v any) error { return yamlUnmarshalStrictImpl(raw, v) }
-
-var _ = json.Marshal // keep encoding/json imported in this file for future use
