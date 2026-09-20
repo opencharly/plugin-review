@@ -170,14 +170,16 @@ func (c *ghClient) toolThread(ctx context.Context, repo string, pr int, headSHA,
 	}, nil
 }
 
-// toolBody returns the CURRENT live issue/PR body as its own result.
+// toolBody returns the CURRENT live issue/PR body as its own result. ghkit.Get
+// decodes the typed body, so the JSON shape lives in one place.
 func (c *ghClient) toolBody(ctx context.Context, repo string, pr int) (prBody, error) {
-	raw, err := c.c.GetRaw(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, pr))
-	if err != nil {
+	var raw struct {
+		Body string `json:"body"`
+	}
+	if err := c.c.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, pr), &raw); err != nil {
 		return prBody{}, err
 	}
-	body := parseIssueBody(string(raw))
-	return prBody{BodyIsAuthoritative: true, Bytes: len(body), Body: body}, nil
+	return prBody{BodyIsAuthoritative: true, Bytes: len(raw.Body), Body: raw.Body}, nil
 }
 
 // toolComment fetches ONE comment by its GitHub comment id.

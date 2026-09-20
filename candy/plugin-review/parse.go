@@ -1,7 +1,6 @@
 package pluginreview
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -66,18 +65,6 @@ func truncateToolResult(s string, max int) string {
 		b = b[:len(b)-1]
 	}
 	return string(b) + fmt.Sprintf("\n[tool result truncated by the review harness: kept %d of %d bytes — the payload above is INCOMPLETE]", len(b), len(s))
-}
-
-type rawIssue struct {
-	Body string `json:"body"`
-}
-
-func parseIssueBody(raw string) string {
-	var i rawIssue
-	if err := json.Unmarshal([]byte(raw), &i); err != nil {
-		return ""
-	}
-	return i.Body
 }
 
 // commentPreviewBytes is how much of a comment body the INDEX carries. The index
