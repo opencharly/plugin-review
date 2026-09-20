@@ -1,7 +1,6 @@
 package pluginreview
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -40,21 +39,12 @@ func truncateStr(s string, bytes int) string {
 // partial rune (R1: divergence from the documented behaviour).
 func utf8Valid(b []byte) bool { return utf8.Valid(b) }
 
-// ---- GitHub API payload parsers ----
-
-type rawCommit struct {
-	SHA    string `json:"sha"`
-	Commit struct {
-		Author struct {
-			Name string `json:"name"`
-			Date string `json:"date"`
-		} `json:"author"`
-		Message string `json:"message"`
-	} `json:"commit"`
-	Author *struct {
-		Login string `json:"login"`
-	} `json:"author"`
-}
+// ---- review-specific shaping helpers ----
+//
+// The GitHub API PARSERS (commits/meta/comment bodies) live in the canonical
+// ghkit (github.com/opencharly/plugin-gh/gh) now — this file keeps only what is
+// review-specific: the env helper, the UTF-8-safe truncation used for the
+// per-message bound, the file-index/one-comment JSON shapes and the preview.
 
 // truncateToolResult bounds ONE tool result before it is appended to the
 // conversation as a tool message. Tool output IS the context-growth trigger
@@ -77,129 +67,13 @@ func truncateToolResult(s string, max int) string {
 	return string(b) + fmt.Sprintf("\n[tool result truncated by the review harness: kept %d of %d bytes — the payload above is INCOMPLETE]", len(b), len(s))
 }
 
-func parseCommits(raw string) ([]prCommit, error) {
-	// Accept the plain array AND the `gh api --paginate --slurp` array-of-pages
-	// shape, same as parseCommentIndex — a >100-commit PR must be complete.
-	cs, err := flattenPages[rawCommit](raw)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]prCommit, 0, len(cs))
-	for _, c := range cs {
-		author := ""
-		if c.Author != nil && c.Author.Login != "" {
-			author = c.Author.Login
-		} else if c.Commit.Author.Name != "" {
-			author = c.Commit.Author.Name
-		}
-		msg := strings.SplitN(c.Commit.Message, "\n", 2)[0]
-		sha := c.SHA
-		if len(sha) > 12 {
-			sha = sha[:12]
-		}
-		out = append(out, prCommit{SHA: sha, Author: author, Date: c.Commit.Author.Date, Message: msg})
-	}
-	return out, nil
-}
-
-type rawIssue struct {
-	Body string `json:"body"`
-}
-type rawComment struct {
-	ID   int `json:"id"`
-	User struct {
-		Login string `json:"login"`
-	} `json:"user"`
-	CreatedAt string `json:"created_at"`
-	Body      string `json:"body"`
-}
-
-func parseIssueBody(raw string) string {
-	var i rawIssue
-	if err := json.Unmarshal([]byte(raw), &i); err != nil {
-		return ""
-	}
-	return i.Body
-}
-
 // commentPreviewBytes is how much of a comment body the INDEX carries. The index
 // must stay small enough to be delivered complete in ONE tool message, so it
 // carries per-comment METADATA + a short preview — never the bodies.
 const commentPreviewBytes = 200
 
-// parseCommentIndex parses the comments endpoint into the compact INDEX the
-// thread tool returns: one row per comment with its id, author, date, byte size
-// and a short preview. It never carries a full body, so the index is O(#comments)
-// and can never be truncated — this is what fixes the aggregate-blob RCA (see
-// truncateToolResult). The model reads a body by calling get_pr_comment with the
-// row's id, which returns THAT comment as its own bounded message.
-// parseCommentIndex parses the comments endpoint into the compact INDEX the
-// thread tool returns. It accepts BOTH shapes the API can yield:
-//
-//   - the plain array from a single page: `[{…},{…}]`;
-//   - the `gh api --paginate --slurp` array-of-pages: `[[{…}],[{…}]]`,
-//
-// so the caller's pagination (which is what makes a >100-comment thread
-// complete) is transparent here. A page-shaped payload is flattened in order,
-// preserving GitHub's ascending comment order across pages.
-func parseCommentIndex(raw string) []commentMeta {
-	cs, err := flattenPages[rawComment](raw)
-	if err != nil {
-		return nil
-	}
-	out := make([]commentMeta, 0, len(cs))
-	for _, c := range cs {
-		author := "unknown"
-		if c.User.Login != "" {
-			author = c.User.Login
-		}
-		out = append(out, commentMeta{
-			ID: c.ID, Author: author, CreatedAt: c.CreatedAt,
-			Bytes: len(c.Body), Preview: firstLine(c.Body, commentPreviewBytes),
-		})
-	}
-	return out
-}
-
-// flattenPages decodes either a flat JSON array of T or the array-of-arrays shape
-// `gh api --paginate --slurp` produces, returning the concatenated rows in order.
-func flattenPages[T any](raw string) ([]T, error) {
-	// Try the slurped (array of pages) shape first: it is what --slurp yields.
-	var pages [][]T
-	if err := json.Unmarshal([]byte(raw), &pages); err == nil {
-		// Distinguish `[[…]]` from `[]`; a JSON object element would have failed
-		// the [][]T decode already, so a successful decode with any page is the
-		// slurped shape. An empty `[]` also decodes here and means no rows.
-		out := make([]T, 0, len(pages))
-		for _, p := range pages {
-			out = append(out, p...)
-		}
-		return out, nil
-	}
-	var flat []T
-	if err := json.Unmarshal([]byte(raw), &flat); err != nil {
-		return nil, err
-	}
-	return flat, nil
-}
-
-// parseOneComment renders a SINGLE fetched comment as a self-contained JSON
-// object (id + author + date + FULL body). This is the unit that travels as one
-// tool message, so it is bounded exactly once, by truncateToolResult, at the
-// per-message cap — never as part of a larger aggregate.
-func parseOneComment(raw string) (json.RawMessage, error) {
-	var c rawComment
-	if err := json.Unmarshal([]byte(raw), &c); err != nil {
-		return nil, err
-	}
-	author := "unknown"
-	if c.User.Login != "" {
-		author = c.User.Login
-	}
-	return json.Marshal(oneComment{ID: c.ID, Author: author, CreatedAt: c.CreatedAt, Body: c.Body})
-}
-
-// oneComment is the shape a single fetched comment is delivered in.
+// oneComment is the shape a single fetched comment is delivered in (built from
+// ghkit's typed PRComment, so the API decode lives in exactly one place).
 type oneComment struct {
 	ID        int    `json:"id"`
 	Author    string `json:"author"`
@@ -222,32 +96,4 @@ func firstLine(s string, max int) string {
 		b = b[:len(b)-1]
 	}
 	return string(b) + "…"
-}
-
-type rawPull struct {
-	Title     string `json:"title"`
-	State     string `json:"state"`
-	Mergeable *bool  `json:"mergeable"`
-	Draft     bool   `json:"draft"`
-	Head      struct {
-		SHA string `json:"sha"`
-	} `json:"head"`
-	Base struct {
-		SHA string `json:"sha"`
-	} `json:"base"`
-	Additions    int `json:"additions"`
-	Deletions    int `json:"deletions"`
-	ChangedFiles int `json:"changed_files"`
-}
-
-func parseMeta(raw string) (prMeta, error) {
-	var p rawPull
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return prMeta{}, err
-	}
-	return prMeta{
-		Title: p.Title, State: p.State, Mergeable: p.Mergeable, Draft: p.Draft,
-		HeadSHA: p.Head.SHA, BaseSHA: p.Base.SHA,
-		Additions: p.Additions, Deletions: p.Deletions, ChangedFiles: p.ChangedFiles,
-	}, nil
 }

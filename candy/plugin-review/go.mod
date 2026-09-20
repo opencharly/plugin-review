@@ -4,8 +4,9 @@ go 1.26.4
 
 require (
 	github.com/openai/openai-go/v3 v3.61.0
-	github.com/opencharly/sdk v0.2026260.1434
-	github.com/opencharly/spec v0.2026259.2033
+	github.com/opencharly/plugin-gh v0.2026263.1602
+	github.com/opencharly/sdk v0.2026263.1023
+	github.com/opencharly/spec v0.2026262.957
 	gopkg.in/yaml.v3 v3.0.1
 )
 

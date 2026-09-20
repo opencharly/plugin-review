@@ -2,15 +2,10 @@ package pluginreview
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -18,39 +13,11 @@ import (
 	"github.com/opencharly/sdk/llmkit"
 )
 
-// review_test.go — the review gate's OWN contract, everything llmkit does NOT
-// own: the knob parsing, the pass/turn budget, the turn-retry policy (retry the
-// FAILED TURN, never restart the loop), the bounded tool-result payload, the
-// inconclusive class, and the session-affinity header. The OpenAI wire format,
-// SSE decoding, tool-call assembly and the idle bound are llmkit's contract and
-// are tested there (sdk/llmkit) — not re-tested here.
-
-// sseChunk writes one streamed OpenAI chunk and flushes it.
-func sseChunk(rw http.ResponseWriter, payload string) {
-	fmt.Fprint(rw, "data: "+payload+"\n\n")
-	if f, ok := rw.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-func sseDone(rw http.ResponseWriter) {
-	fmt.Fprint(rw, "data: [DONE]\n\n")
-	if f, ok := rw.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// stallAfterHeaders models a provider that accepts the request then stops
-// streaming. It drains the body first so the server starts its disconnect-
-// detecting read.
-func stallAfterHeaders(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "text/event-stream")
-	rw.WriteHeader(http.StatusOK)
-	if f, ok := rw.(http.Flusher); ok {
-		f.Flush()
-	}
-	<-r.Context().Done()
-}
+// review_test.go — the review gate's PURE-UNIT contract: knob parsing, the
+// llmConfig mapping, the timeout-class predicate, the per-message truncation
+// helper, and the prFromEventPath parser. Everything that exercises a SERVICE
+// (the LLM, GitHub) lives in livetest_test.go and runs LIVE-or-SKIP; nothing
+// here fabricates a service response.
 
 // ---- knob parsing ----
 
@@ -111,130 +78,9 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 
 // ---- the pass / turn budget ----
 
-// TestOnePassFailsFast drives AI_REVIEW_MAX_ATTEMPTS=1: a verdict-less but
-// COMPLETED pass is not re-run, so the request count equals the pass count.
-func TestOnePassFailsFast(t *testing.T) {
-	var requests int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
-		sseChunk(rw, `{"choices":[{"delta":{"content":"a review with no verdict line"}}]}`)
-		sseDone(rw)
-	}))
-	defer srv.Close()
-
-	cfg := reviewConfig{Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 1, MaxAttempts: 1, StreamIdleTimeout: 2 * time.Second, RetryBackoff: time.Millisecond}
-	_, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
-	if err == nil {
-		t.Fatal("expected an error from the single-pass loop")
-	}
-	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Errorf("AI_REVIEW_MAX_ATTEMPTS=1: got %d turn request(s), want exactly 1", got)
-	}
-}
-
-func TestZeroPassesClampsToOne(t *testing.T) {
-	var requests int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
-		sseChunk(rw, `{"choices":[{"delta":{"content":"no verdict"}}]}`)
-		sseDone(rw)
-	}))
-	defer srv.Close()
-	cfg := reviewConfig{Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 1, MaxAttempts: 0, StreamIdleTimeout: 2 * time.Second}
-	if _, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{}); err == nil {
-		t.Fatal("expected an error from the clamped single-pass loop")
-	}
-	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Errorf("MaxAttempts=0 clamp: got %d turn request(s), want exactly 1", got)
-	}
-}
-
 // ---- the turn-retry policy ----
 
-// TestFailedTurnRetriesWithoutRestartingLoop is the central policy test: turn 1
-// succeeds (one tool call), turn 2's first two attempts stall, the third
-// succeeds. A loop restart would show up as EXTRA turn-1 requests.
-func TestFailedTurnRetriesWithoutRestartingLoop(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "fixtures"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "fixtures", "fx-get_pr_meta.json"), []byte(`{"title":"t"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
-
-	var mu sync.Mutex
-	var reqs []map[string]any
-	var n int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		mu.Lock()
-		reqs = append(reqs, body)
-		mu.Unlock()
-		switch atomic.AddInt32(&n, 1) {
-		case 1:
-			sseChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_pr_meta","arguments":"{}"}}]}}]}`)
-			sseDone(rw)
-		case 2, 3:
-			stallAfterHeaders(rw, r)
-		default:
-			sseChunk(rw, `{"choices":[{"delta":{"content":"## Review\n\nVerdict: PASS\n"}}]}`)
-			sseDone(rw)
-		}
-	}))
-	defer srv.Close()
-
-	cfg := reviewConfig{Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k", MaxTurns: 5,
-		StreamIdleTimeout: 150 * time.Millisecond, RetryBackoff: time.Millisecond}
-	review, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{fixture: "fx"})
-	if err != nil {
-		t.Fatalf("runAgentLoop: %v", err)
-	}
-	if !strings.Contains(review, "Verdict: PASS") {
-		t.Fatalf("no verdict recovered after the stalled turn: %q", review)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(reqs) != 4 {
-		t.Fatalf("requests=%d want 4 (turn 1 once + 3 turn-2 attempts); a loop restart shows as extra turn-1 requests", len(reqs))
-	}
-	turnWithTool := 0
-	for _, r := range reqs {
-		if msgs, ok := r["messages"].([]any); ok {
-			for _, m := range msgs {
-				if mm, ok := m.(map[string]any); ok && mm["role"] == "tool" {
-					turnWithTool++
-					break
-				}
-			}
-		}
-	}
-	if turnWithTool != 3 {
-		t.Fatalf("requests carrying the tool result=%d want 3 — the retry must resume the FAILED TURN", turnWithTool)
-	}
-}
-
 // ---- the inconclusive class ----
-
-func TestTimeoutClassExhaustion(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		stallAfterHeaders(rw, r)
-	}))
-	defer srv.Close()
-	cfg := reviewConfig{Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 3, StreamIdleTimeout: 50 * time.Millisecond, RetryBackoff: time.Millisecond}
-	_, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
-	if err == nil {
-		t.Fatal("expected an error from the exhausted loop")
-	}
-	if !strings.Contains(err.Error(), "inconclusive") {
-		t.Errorf("exhaustion must yield the INCONCLUSIVE marker, got: %v", err)
-	}
-}
 
 func TestTimeoutClassPositive(t *testing.T) {
 	if !isTimeoutClass(context.DeadlineExceeded) {
@@ -243,9 +89,14 @@ func TestTimeoutClassPositive(t *testing.T) {
 	if isTimeoutClass(context.Canceled) {
 		t.Error("context.Canceled must NOT classify as the timeout class")
 	}
-	// llmkit's named stall class must classify (its wording is "stream stalled").
-	if !isTimeoutClass(fmt.Errorf("LLM stream stalled: no chunk for 3m0s after 12 byte(s) of content")) {
-		t.Error("llmkit's stream-stall error must classify as the timeout class")
+	// llmkit's TYPED stall class must classify — via errors.As, not string matching
+	// of the library's wording (which llmkit is free to change).
+	if !isTimeoutClass(&llmkit.StallError{Idle: 3 * time.Minute, ContentBytes: 12}) {
+		t.Error("llmkit's typed StallError must classify as the timeout class")
+	}
+	// A wrapped StallError must also classify (errors.As unwraps).
+	if !isTimeoutClass(fmt.Errorf("turn failed: %w", &llmkit.StallError{Idle: time.Second})) {
+		t.Error("a wrapped StallError must classify as the timeout class")
 	}
 }
 
@@ -275,103 +126,7 @@ func TestTruncateToolResult(t *testing.T) {
 	}
 }
 
-func TestToolResultPayloadIsBoundedInTheConversation(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "fixtures"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "fixtures", "fx-get_pr_diff.json"), []byte(strings.Repeat("x", 300*1024)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
-
-	const cap = 4096
-	var mu sync.Mutex
-	var second map[string]any
-	var n int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if atomic.AddInt32(&n, 1) == 1 {
-			sseChunk(rw, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_pr_diff","arguments":"{}"}}]}}]}`)
-			sseDone(rw)
-			return
-		}
-		mu.Lock()
-		second = body
-		mu.Unlock()
-		sseChunk(rw, `{"choices":[{"delta":{"content":"Verdict: PASS\n"}}]}`)
-		sseDone(rw)
-	}))
-	defer srv.Close()
-
-	cfg := reviewConfig{Provider: "test", Model: "m", BaseURL: srv.URL, APIKey: "k", MaxTurns: 4,
-		StreamIdleTimeout: 2 * time.Second, RetryBackoff: time.Millisecond, ToolResultMaxBytes: cap}
-	if _, err := runAgentLoop(context.Background(), cfg, "prompt", toolSet{fixture: "fx"}); err != nil {
-		t.Fatalf("runAgentLoop: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	var toolContent string
-	if msgs, ok := second["messages"].([]any); ok {
-		for _, m := range msgs {
-			if mm, ok := m.(map[string]any); ok && mm["role"] == "tool" {
-				if c, ok := mm["content"].(string); ok {
-					toolContent = c
-				}
-			}
-		}
-	}
-	if toolContent == "" {
-		t.Fatal("the turn-2 request must carry the tool result")
-	}
-	if len(toolContent) > cap+200 {
-		t.Fatalf("tool result handed to the model is %d bytes, want ~%d", len(toolContent), cap)
-	}
-	if !strings.Contains(toolContent, "truncated by the review harness") {
-		t.Fatal("the truncation marker is missing from the tool message")
-	}
-}
-
 // ---- session affinity ----
-
-// TestSessionHeaderSentAndStablePerRun proves the review sends x-opencode-session
-// and that every request of ONE run carries the SAME value (a per-request id
-// would defeat the routing it exists for). llmkit forwards Config.Headers; this
-// test pins the review's contribution.
-func TestSessionHeaderSentAndStablePerRun(t *testing.T) {
-	var mu sync.Mutex
-	var got []string
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		got = append(got, r.Header.Get("x-opencode-session"))
-		mu.Unlock()
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusBadRequest)
-		_, _ = rw.Write([]byte("no session"))
-	}))
-	defer srv.Close()
-	cfg := reviewConfig{Provider: "opencode", Model: "m", BaseURL: srv.URL, APIKey: "k",
-		MaxTurns: 1, StreamIdleTimeout: 2 * time.Second, RetryBackoff: time.Millisecond,
-		SessionID: newSessionID()}
-	_, _ = runAgentLoop(context.Background(), cfg, "prompt", toolSet{})
-	mu.Lock()
-	defer mu.Unlock()
-	if len(got) == 0 {
-		t.Fatal("no request reached the test server")
-	}
-	if got[0] == "" {
-		t.Fatal("x-opencode-session must be sent: the gateway 400s MissingSessionID without it")
-	}
-	if len(got[0]) != 32 {
-		t.Fatalf("session id = %q, want 32 hex chars", got[0])
-	}
-	for i, s := range got {
-		if s != got[0] {
-			t.Fatalf("attempt %d sent session %q; every request of a run must share ONE session (%q)", i, s, got[0])
-		}
-	}
-}
 
 // TestSessionAffinityDisabled: an explicit empty AI_REVIEW_SESSION_ID suppresses
 // the header for a non-opencode gateway.
@@ -495,11 +250,18 @@ func TestGenerationBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rc.ReasoningEffort != defaultReasoningEffort {
-		t.Errorf("ReasoningEffort default = %q, want %q", rc.ReasoningEffort, defaultReasoningEffort)
+	// The QUALITY default is high thinking; max_tokens is the SHARED
+	// reasoning+answer budget and must be large enough that thinking cannot
+	// consume it (measured: a 16384 cap produced an empty completion with
+	// finish_reason=length). This pins both.
+	if rc.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort default = %q, want high (the quality default)", rc.ReasoningEffort)
 	}
 	if rc.MaxTokens != defaultMaxTokens {
 		t.Errorf("MaxTokens default = %d, want %d", rc.MaxTokens, defaultMaxTokens)
+	}
+	if defaultMaxTokens <= 65536 {
+		t.Errorf("defaultMaxTokens = %d, must be comfortably above what high thinking consumes", defaultMaxTokens)
 	}
 	lc := llmConfig(rc)
 	if lc.Params.Reasoning_effort != defaultReasoningEffort {
@@ -540,5 +302,69 @@ func TestGenerationBoundsDisable(t *testing.T) {
 	}
 	if rc.MaxTokens != defaultMaxTokens {
 		t.Errorf("invalid max tokens must keep the default, got %d", rc.MaxTokens)
+	}
+}
+
+// TestTemperatureConfigurable pins that AI_REVIEW_TEMPERATURE overrides the
+// default and reaches the wire params, and that an explicit 0 wins (0 is a
+// legitimate deterministic setting, not "unset").
+func TestTemperatureConfigurable(t *testing.T) {
+	rc, _, err := parseReviewArgs(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != reviewTemperature {
+		t.Fatalf("default temperature not applied: %v", lc.Params.Temperature)
+	}
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0.7")
+	rc, _, _ = parseReviewArgs(nil, nil)
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != 0.7 {
+		t.Fatalf("AI_REVIEW_TEMPERATURE not applied: %v", lc.Params.Temperature)
+	}
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0")
+	rc, _, _ = parseReviewArgs(nil, nil)
+	if lc := llmConfig(rc); lc.Params.Temperature == nil || *lc.Params.Temperature != 0 {
+		t.Fatalf("explicit 0 must win, got %v", lc.Params.Temperature)
+	}
+}
+
+// TestPRFromEventPathNoPullRequestDoesNotPanic: a workflow_dispatch event has no
+// `pull_request` object. Dereferencing it SIGSEGV'd during the bootstrap
+// self-test (measured live). A missing PR context returns 0, never a panic.
+func TestPRFromEventPathNoPullRequestDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "event.json")
+	if err := os.WriteFile(p, []byte(`{"action":"workflow_dispatch","inputs":{"pr-number":"1"},"repository":{"name":"x","owner":{"login":"o"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := prFromEventPath(p); got != 0 {
+		t.Fatalf("workflow_dispatch event must yield 0, got %d", got)
+	}
+	// A pull_request event still yields its number.
+	p2 := filepath.Join(dir, "pr.json")
+	if err := os.WriteFile(p2, []byte(`{"pull_request":{"number":42,"head":{"sha":"a"},"base":{"sha":"b"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := prFromEventPath(p2); got != 42 {
+		t.Fatalf("pull_request event must yield 42, got %d", got)
+	}
+}
+
+// TestDeterministicClassIsTyped pins the fail-hard classification WITHOUT a
+// service: an EmptyCompletionError is deterministic (not retryable), a plain
+// error is not. The loop's "fail hard, do not blind-retry" branch keys on this.
+func TestDeterministicClassIsTyped(t *testing.T) {
+	det := &llmkit.EmptyCompletionError{ReasoningBytes: 10, FinishReason: "length"}
+	if !isDeterministicClass(det) {
+		t.Fatal("an EmptyCompletionError must classify as deterministic (non-retryable)")
+	}
+	if !isDeterministicClass(fmt.Errorf("wrapped: %w", det)) {
+		t.Fatal("a wrapped EmptyCompletionError must still classify (errors.As unwraps)")
+	}
+	if isDeterministicClass(fmt.Errorf("transport blip")) {
+		t.Fatal("a plain error must NOT be deterministic")
+	}
+	if !strings.Contains(det.Error(), "budget") {
+		t.Fatalf("a length-truncated empty completion must name the budget, got: %v", det)
 	}
 }

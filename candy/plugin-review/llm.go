@@ -51,7 +51,14 @@ type reviewToolSpec struct {
 var reviewTools = []reviewToolSpec{
 	{name: "get_pr_meta", description: "PR metadata: title, state, mergeable, head/base sha, file counts. Call this FIRST."},
 	{name: "get_pr_body", description: "The CURRENT live PR/issue body as its own message — authoritative; it supersedes anything an older comment said. Read as a single unit, never bundled with the comments."},
-	{name: "get_pr_diff", description: "CURRENT unified diff (head vs base) as its own message."},
+	{name: "get_pr_files", description: "The changed-FILE INDEX: path, status, additions, deletions and patch size for EVERY changed file, plus file_count and total_patch_bytes. The DIFFS are NOT here — call get_pr_file for EACH path to read its full patch. Read this index FIRST, then read EVERY file it lists (the run is refused a verdict until you have)."},
+	{name: "get_pr_file", description: "Read ONE changed file's FULL patch (its unified diff) by path, as its own message. This is how you read the diff: ONE FILE PER CALL, for EVERY file in the get_pr_files index. Reading one file per message is required so a large multi-file diff is never truncated.", params: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "A path from the get_pr_files files[] index (exact string)."},
+		},
+		"required": []string{"path"},
+	}},
 	{name: "get_pr_commits", description: "Commit history of this PR (sha, message, author) — read commit messages since the last review here."},
 	{name: "get_pr_thread", description: "The comment INDEX: id/author/date/size/preview for every comment, plus the per-comment byte cap. Comment BODIES are NOT included — call get_pr_comment with a row's id to read one comment as its own message. Older comments are stale until re-verified."},
 	{name: "get_pr_comment", description: "Read ONE comment by id (from get_pr_thread's index) as its own message: its full body plus author and date. Reading comments ONE AT A TIME is the intended path — it keeps each message small so nothing is truncated.", params: map[string]any{
@@ -105,18 +112,18 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 		// The review's generation parameters, pinned as DATA (the retired client
 		// hardcoded temperature 0.2 + tool_choice auto in the request literal).
 		//
-		// BOUND THE GENERATION. The measured root cause of the gate's ~13-minute
-		// runs: the engine sent NO reasoning cap and NO max_tokens, so against the
-		// REAL validator context (28 KB rulebook + 79 KB PR thread + 120 KB diff)
-		// deepseek-v4.1-flash generated 1.75 MB of reasoning over 786 s before any
-		// answer, which the whole-request cap then killed mid-generation. Setting
-		// reasoning_effort=low (env AI_REVIEW_REASONING_EFFORT) plus a max_tokens
-		// ceiling (env AI_REVIEW_MAX_TOKENS) collapses that to 47–107 s with a
-		// verdict present; reasoning_effort=none instead returns tool_calls and
-		// loops without a verdict. Defaults are the bounded values; "" / 0
-		// disables each.
+		// THINKING + BUDGET. reasoning_effort selects the thinking depth (the
+		// QUALITY default is `high`) and max_tokens is the SHARED reasoning+answer
+		// budget, so it is set well above what thinking consumes (see the
+		// defaultReasoningEffort/defaultMaxTokens note above for the measurement).
+		// temperature is configurable (env AI_REVIEW_TEMPERATURE). Every one of
+		// these is env-overridable; "" / 0 disables that knob.
+		//
+		// tool_choice is data for providers that use it (OpenRouter); Ollama
+		// Cloud's OpenAI-compatible endpoint documents it as UNSUPPORTED and
+		// ignores it, so the engine must not depend on it.
 		Params: spec.LLMParams{
-			Temperature: &reviewTemperature,
+			Temperature: temperatureOrDefault(cfg.Temperature),
 			Tool_choice: "auto",
 		},
 	}
@@ -140,22 +147,44 @@ func llmConfig(cfg reviewConfig) llmkit.Config {
 	return c.Normalize()
 }
 
-// reviewTemperature is the review gate's generation temperature — low for a
-// deterministic verdict. It is a named constant, not a literal in the request.
+// reviewTemperature is the review gate's DEFAULT generation temperature — low
+// for a deterministic verdict. It is a named constant, not a literal in the
+// request, and is overridable via env AI_REVIEW_TEMPERATURE.
 var reviewTemperature = 0.2
 
+// temperatureOrDefault returns the configured temperature, or the default when
+// unset (an explicit AI_REVIEW_TEMPERATURE always wins, including 0).
+func temperatureOrDefault(t *float64) *float64 {
+	if t != nil {
+		return t
+	}
+	return &reviewTemperature
+}
+
 // Generation bounds — the fix for the gate's measured ~13-minute runs (RCA
-// 2026-09-19). deepseek-v4.1-flash is a REASONING model: given the real
-// validator context (28 KB rulebook + 79 KB PR thread + 120 KB diff) with NO
-// cap it generated 1.75 MB of reasoning over 786 s before answering, which the
-// workflow's whole-request cap killed mid-generation; a too-tight cap instead
-// yields an empty completion (`turn 2: final content len=0`). Capping the OUTPUT
-// (max_tokens) and the reasoning depth (reasoning_effort=low) reliably produces a
-// verdict in ~1–2 minutes. Both are env-overridable; a zero/empty value disables
-// that knob (the operator accepts the unbounded behaviour).
+// 2026-09-19, CORRECTED 2026-09-20 by measurement).
+//
+// deepseek-v4.1-flash is a REASONING model. On Ollama Cloud's OpenAI-compatible
+// endpoint (https://ollama.com/v1) `reasoning_effort` selects the thinking depth
+// (high|medium|low|max|none) and `max_tokens` is a SINGLE SHARED BUDGET for
+// reasoning + answer — NOT an answer-only cap. Measured consequences:
+//
+//   - `high` thinking can spend more than a SMALL budget on reasoning and then
+//     return an empty completion with finish_reason=length: a 16384-token cap
+//     produced 57363 / 66536 / 64949 bytes of reasoning on three consecutive
+//     attempts with content=0. The engine then re-issued the SAME doomed request
+//     3x (2m52s wasted) — the measured amplifier of the long runs.
+//   - With a budget that leaves room ABOVE the thinking, `high` completes: a
+//     262144-token cap produced a BLOCK verdict with zero empty completions in
+//     49–123 s across repeat runs.
+//
+// So the QUALITY default is `high`, and defaultMaxTokens is set well above what
+// thinking consumes (the model's own maximum output is 393216; the provider
+// rejects a value above it). Never lower reasoning_effort to save time — raise
+// max_tokens instead. Both are env-overridable; "" / 0 disables that knob.
 const (
-	defaultReasoningEffort = "low"
-	defaultMaxTokens       = 65536
+	defaultReasoningEffort = "high"
+	defaultMaxTokens       = 262144
 )
 
 // reviewSessionID returns the session-affinity id for a run. `AI_REVIEW_SESSION_ID`:
