@@ -902,17 +902,20 @@ func agentLoopOnce(ctx context.Context, cfg reviewConfig, prompt string, tools t
 				out = "{\"error\": " + jsonQuote(err.Error()) + "}"
 			}
 			// Each tool result is its OWN tool message and is bounded EXACTLY ONCE
-			// here: get_pr_thread returns a compact index (not the aggregate
-			// bodies) and get_pr_comment returns one comment, so no single message
-			// can lose its tail to a cap — the RCA that made the trailing review
-			// round and sign-off invisible.
-			//
-			// Per-file delivery means no tool result is the consolidated diff
-			// anymore, so ONE general cap suffices. A file whose patch alone
-			// exceeds it is a genuine anomaly (the reviewer cannot see it whole) —
-			// the context guard catches that class; the announced cut here is the
-			// per-MESSAGE memory bound, not a policy that hides a whole diff.
-			c := truncateToolResult(out, cfg.ToolResultMaxBytes)
+			// here. A result that WOULD be truncated is a FAIL-CLOSED class, never
+			// a silent skim: the gate must never review a truncated security input
+			// (a diff, the body, the thread). So "the reviewed input is never
+			// truncated" is true by construction — if it cannot be delivered whole,
+			// the run FAILS with an actionable class instead.
+			cap := cfg.ToolResultMaxBytes
+			if cap <= 0 {
+				cap = defaultToolResultMaxBytes
+			}
+			if len(out) > cap {
+				return "", fmt.Errorf("inconclusive: %s returned %d bytes, above the %d-byte per-message cap — the review cannot see this input whole, and a truncated security input must never be reviewed. This is NOT a verdict; raise AI_REVIEW_TOOL_RESULT_MAX_BYTES, split the change, or reduce the item",
+					tc.Name, len(out), cap)
+			}
+			c := out
 			dbg("  tool %q args=%d bytes -> result=%d bytes (post-cap=%d) in %v", tc.Name, len(tc.Arguments), len(out), len(c), toolDur)
 			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(c)})
 		}

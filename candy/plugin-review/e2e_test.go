@@ -8,19 +8,19 @@ import (
 	"testing"
 )
 
-// e2e_test.go — the LIVE end-to-end proof: the FULL runtime path (PR identity →
-// the read-only tools over the REAL GitHub API → the REAL model's chat-completions
-// tool loop → Verdict extraction → $GITHUB_OUTPUT → ONE PR comment) run against
-// live services. It SKIPS when either service is unreachable — never a mock.
+// e2e_test.go — the LIVE end-to-end proof of the ENGINE loop: PR identity →
+// the read-only tools over the REAL GitHub API → the REAL model's
+// chat-completions tool loop → Verdict extraction. It SKIPS when either service
+// is unreachable — never a mock.
 //
-//	AI_REVIEW_LIVE_REPO   default opencharly/plugin-review
-//	AI_REVIEW_LIVE_PR     default 13
-//	AI_REVIEW_LIVE_URL    default http://localhost:11434/v1
-//	LIVE_OPENCODE_KEY / GITHUB_TOKEN: the live credentials.
+//	AI_REVIEW_LIVE_REPO  REQUIRED to opt in (e.g. opencharly/plugin-review)
+//	AI_REVIEW_LIVE_PR    the PR number (default)
+//	AI_REVIEW_LIVE_URL   default http://localhost:11434/v1
+//	GITHUB_TOKEN / an authenticated gh CLI: the live credential.
 //
-// It does NOT post a comment to the live PR (posting is asserted by the count of
-// the run's own effect, not by mutating a real PR thread): PostComment is
-// exercised only when AI_REVIEW_LIVE_POST=1 is set explicitly.
+// It proves the ENGINE TOOL LOOP and the verdict extraction. It does NOT post a
+// live PR comment (a mutation): the comment post is ghkit's own PostComment and
+// is covered by the engine's single-effect test when enabled explicitly.
 func TestReviewE2ELive(t *testing.T) {
 	if os.Getenv("AI_REVIEW_LIVE_E2E") != "1" {
 		t.Skip("SKIP: set AI_REVIEW_LIVE_E2E=1 to run the live end-to-end review (it drives the real model API and the real GitHub API)")
@@ -53,13 +53,22 @@ func TestReviewE2ELive(t *testing.T) {
 	}
 	t.Logf("LIVE verdict on %s#%d: %v (review %d bytes)", repo, pr, distinct, len(review))
 
-	// The output write is a real file effect (no service).
-	if err := os.WriteFile(cfg.OutPath, []byte(review), 0o644); err != nil {
-		t.Fatal(err)
+	// Exercise the REAL effect writer (emitReviewEffects → writeGHOutputs + --out
+	// file), not a raw os.WriteFile. cfg.PR is zeroed first so NO live comment is
+	// posted (a mutation the test must not perform on someone else's PR).
+	cfg.PR = 0
+	ghOutput := filepath.Join(dir, "gh_output.txt")
+	t.Setenv("GITHUB_OUTPUT", ghOutput)
+	if err := emitReviewEffects(context.Background(), cfg, review); err != nil {
+		t.Fatalf("emitReviewEffects: %v", err)
 	}
-	raw, _ := os.ReadFile(cfg.OutPath)
-	if !strings.Contains(string(raw), "Verdict:") {
-		t.Fatalf("the out file must carry the verdict")
+	raw, _ := os.ReadFile(ghOutput)
+	if !strings.Contains(string(raw), "verdict=") {
+		t.Fatalf("$GITHUB_OUTPUT must carry the verdict, got: %s", raw)
+	}
+	out, _ := os.ReadFile(cfg.OutPath)
+	if !strings.Contains(string(out), "Verdict:") {
+		t.Fatalf("the --out file must carry the verdict")
 	}
 }
 

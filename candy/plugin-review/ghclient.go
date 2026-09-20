@@ -15,15 +15,30 @@ import (
 // auth headers, the read bound and the non-2xx status+body surfacing, so this
 // file holds only the review-specific shaping.
 type ghClient struct {
-	c *ghkit.Client
+	c   *ghkit.Client
+	err error
 }
 
 // newGHClient builds the canonical client. A missing token is NOT fatal: public
 // reads work unauthenticated, and the auth failure surfaces at the call with
-// the HTTP status + body (never as a speculative abort).
+// the HTTP status + body (never as a speculative abort). A CONSTRUCTION error,
+// however, is stored and surfaced at the first use — never discarded (a nil
+// dereference later is the class this engine already fixed once).
 func newGHClient() *ghClient {
-	c, _ := ghkit.New()
-	return &ghClient{c: c}
+	c, err := ghkit.New()
+	return &ghClient{c: c, err: err}
+}
+
+// client returns the underlying client or the construction error, so a failed
+// build is a clear error, never a nil dereference.
+func (g *ghClient) client() (*ghkit.Client, error) {
+	if g.err != nil {
+		return nil, fmt.Errorf("github client construction failed: %w", g.err)
+	}
+	if g.c == nil {
+		return nil, fmt.Errorf("github client is nil (not constructed)")
+	}
+	return g.c, nil
 }
 
 // ---- the read-only tools (the review gate's own shaping over ghkit) ----
@@ -68,7 +83,11 @@ type prFile struct {
 // toolFiles returns the changed-file INDEX (no patches). A file's patch is read
 // by toolFile.
 func (c *ghClient) toolFiles(ctx context.Context, repo string, pr int) (prFileIndex, error) {
-	files, err := c.c.PRFiles(ctx, repo, pr)
+	cli, err := c.client()
+	if err != nil {
+		return prFileIndex{}, err
+	}
+	files, err := cli.PRFiles(ctx, repo, pr)
 	if err != nil {
 		return prFileIndex{}, err
 	}
@@ -88,7 +107,11 @@ func (c *ghClient) toolFiles(ctx context.Context, repo string, pr int) (prFileIn
 // per-message cap is applied exactly once, in the loop). A path NOT in the PR's
 // changed set is a clear error, so the model cannot invent files.
 func (c *ghClient) toolFile(ctx context.Context, repo string, pr int, path string) (prFile, error) {
-	files, err := c.c.PRFiles(ctx, repo, pr)
+	cli, err := c.client()
+	if err != nil {
+		return prFile{}, err
+	}
+	files, err := cli.PRFiles(ctx, repo, pr)
 	if err != nil {
 		return prFile{}, err
 	}
@@ -109,7 +132,11 @@ type prCommit struct {
 
 // toolCommits: PR commit history (sha, message, author).
 func (c *ghClient) toolCommits(ctx context.Context, repo string, pr int) ([]prCommit, error) {
-	cs, err := c.c.PRCommits(ctx, repo, pr)
+	cli, err := c.client()
+	if err != nil {
+		return nil, err
+	}
+	cs, err := cli.PRCommits(ctx, repo, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +180,11 @@ type prBody struct {
 // toolThread returns the comment INDEX only (ids + metadata + preview), plus the
 // per-comment byte cap. The body is NOT here — see toolBody.
 func (c *ghClient) toolThread(ctx context.Context, repo string, pr int, headSHA, baseSHA string, maxCommentBytes int) (prThread, error) {
-	comments, err := c.c.PRComments(ctx, repo, pr)
+	cli, err := c.client()
+	if err != nil {
+		return prThread{}, err
+	}
+	comments, err := cli.PRComments(ctx, repo, pr)
 	if err != nil {
 		return prThread{}, err
 	}
@@ -173,10 +204,14 @@ func (c *ghClient) toolThread(ctx context.Context, repo string, pr int, headSHA,
 // toolBody returns the CURRENT live issue/PR body as its own result. ghkit.Get
 // decodes the typed body, so the JSON shape lives in one place.
 func (c *ghClient) toolBody(ctx context.Context, repo string, pr int) (prBody, error) {
+	cli, err := c.client()
+	if err != nil {
+		return prBody{}, err
+	}
 	var raw struct {
 		Body string `json:"body"`
 	}
-	if err := c.c.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, pr), &raw); err != nil {
+	if err := cli.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, pr), &raw); err != nil {
 		return prBody{}, err
 	}
 	return prBody{BodyIsAuthoritative: true, Bytes: len(raw.Body), Body: raw.Body}, nil
@@ -184,7 +219,11 @@ func (c *ghClient) toolBody(ctx context.Context, repo string, pr int) (prBody, e
 
 // toolComment fetches ONE comment by its GitHub comment id.
 func (c *ghClient) toolComment(ctx context.Context, repo string, id int) (json.RawMessage, error) {
-	cm, err := c.c.PRComment(ctx, repo, id)
+	cli, err := c.client()
+	if err != nil {
+		return nil, err
+	}
+	cm, err := cli.PRComment(ctx, repo, id)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +244,11 @@ type prMeta struct {
 
 // toolMeta: PR metadata.
 func (c *ghClient) toolMeta(ctx context.Context, repo string, pr int) (prMeta, error) {
-	m, err := c.c.PRMeta(ctx, repo, pr)
+	cli, err := c.client()
+	if err != nil {
+		return prMeta{}, err
+	}
+	m, err := cli.PRMeta(ctx, repo, pr)
 	if err != nil {
 		return prMeta{}, err
 	}
@@ -215,5 +258,9 @@ func (c *ghClient) toolMeta(ctx context.Context, repo string, pr int) (prMeta, e
 // postComment: ONE PR comment via the canonical client. A failure is a real
 // error (surfaced by the caller as non-fatal), never a silent drop.
 func (c *ghClient) postComment(ctx context.Context, repo string, pr int, body string) error {
-	return c.c.PostComment(ctx, repo, pr, body)
+	cli, err := c.client()
+	if err != nil {
+		return err
+	}
+	return cli.PostComment(ctx, repo, pr, body)
 }
