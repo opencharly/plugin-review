@@ -75,32 +75,6 @@ func (g *ghClient) body(ctx context.Context, repo string, pr int) (string, error
 	return raw.Body, nil
 }
 
-// filesIndex returns the changed-file INDEX: metadata + patch_bytes, NO patch
-// text. This is the ONE shape the `pr_files` verb AND the get_pr_files tool
-// return (R3). Full patches are read per file via files()/get_pr_file.
-func (g *ghClient) filesIndex(ctx context.Context, repo string, pr int) (struct {
-	Files           []ChangedFile `json:"files"`
-	FileCount       int           `json:"file_count"`
-	TotalPatchBytes int           `json:"total_patch_bytes"`
-}, error) {
-	var out struct {
-		Files           []ChangedFile `json:"files"`
-		FileCount       int           `json:"file_count"`
-		TotalPatchBytes int           `json:"total_patch_bytes"`
-	}
-	files, err := g.files(ctx, repo, pr)
-	if err != nil {
-		return out, err
-	}
-	out.Files = make([]ChangedFile, 0, len(files))
-	for _, f := range files {
-		out.Files = append(out.Files, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, PatchBytes: f.PatchBytes})
-		out.TotalPatchBytes += f.PatchBytes
-	}
-	out.FileCount = len(out.Files)
-	return out, nil
-}
-
 func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFile, error) {
 	cli, err := g.client()
 	if err != nil {
@@ -159,42 +133,4 @@ func (g *ghClient) postComment(ctx context.Context, repo string, pr int, body st
 		return err
 	}
 	return cli.PostComment(ctx, repo, pr, body)
-}
-
-// CommentIndex is one INDEX row: metadata + a short preview, NEVER the body. A
-// body is fetched by id (get_pr_comment / pr_comment). This is the contract the
-// removed thread_index_test pinned and the tool description promises.
-type CommentIndex struct {
-	ID        int    `json:"id"`
-	Author    string `json:"author"`
-	CreatedAt string `json:"created_at"`
-	Bytes     int    `json:"bytes"`
-	Preview   string `json:"preview"`
-}
-
-// Thread is the comment INDEX the `pr_thread` verb and the engine's
-// get_pr_thread tool BOTH return — one shape (R3). It carries per-comment
-// metadata + a short preview, never the bodies.
-type Thread struct {
-	HeadSHA      string         `json:"head_sha"`
-	BaseSHA      string         `json:"base_sha"`
-	Comments     []CommentIndex `json:"comments"`
-	CommentCount int            `json:"comment_count"`
-}
-
-// thread builds the index (bodies replaced by a size + short preview) for a PR.
-func (g *ghClient) thread(ctx context.Context, repo string, pr int) (Thread, error) {
-	cs, err := g.comments(ctx, repo, pr)
-	if err != nil {
-		return Thread{}, err
-	}
-	idx := make([]CommentIndex, 0, len(cs))
-	for _, c := range cs {
-		idx = append(idx, CommentIndex{ID: c.ID, Author: c.Author, CreatedAt: c.CreatedAt, Bytes: len(c.Body), Preview: firstLine(c.Body, 200)})
-	}
-	meta, err := g.meta(ctx, repo, pr)
-	if err != nil {
-		return Thread{}, err
-	}
-	return Thread{HeadSHA: meta.HeadSHA, BaseSHA: meta.BaseSHA, Comments: idx, CommentCount: len(idx)}, nil
 }

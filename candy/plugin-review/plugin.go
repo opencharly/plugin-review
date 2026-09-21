@@ -7,31 +7,27 @@ package pluginreview
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/opencharly/plugin-review/candy/plugin-review/params"
 	"github.com/opencharly/sdk"
 	pb "github.com/opencharly/spec/proto"
 )
-
-//go:embed schema/*.cue
-var schemaFS embed.FS
 
 const calver = "2026.263.2100"
 
 func NewProvider() pb.ProviderServer { return &provider{} }
 
 func NewMeta() pb.PluginMetaServer {
+	// Input-less: command:review's args are pass-through CLI tokens, so there is
+	// no typed plugin_input and NO CUE schema — the SDK's documented "input-less
+	// plugin passes a nil schemaFS" path.
 	return sdk.NewMeta(calver,
 		[]sdk.ProvidedCapability{
 			{Class: "command", Word: "review"},
-			{Class: "verb", Word: "pr", InputDef: "#PrInput"},
 		},
-		schemaFS)
+		nil)
 }
 
 // CliMain is the OUT-OF-PROCESS CLI-mode entry (sdk.Main dual mode): fork/exec'd
@@ -87,68 +83,7 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 		return &pb.InvokeReply{}, nil
 	}
 
-	// verb:pr — the read-only PR facts a bed probes. These read the SAME canonical
-	// client the engine uses (R3); they exist so a check bed can assert PR state
-	// without a review.
-	var in struct {
-		PluginInput params.PrInput `json:"plugin_input"`
-	}
-	if len(req.GetParamsJson()) > 0 {
-		if err := json.Unmarshal(req.GetParamsJson(), &in); err != nil {
-			return nil, fmt.Errorf("pr verb: decode plugin_input: %w", err)
-		}
-	}
-	input := in.PluginInput
-	repo := input.Repo
-	if repo == "" {
-		repo = getenvAny("GITHUB_REPOSITORY")
-	}
-	if !strings.Contains(repo, "/") {
-		return nil, fmt.Errorf("pr verb: repo must be owner/repo (got %q)", repo)
-	}
-	pr := int(input.Pr)
-	if pr == 0 {
-		pr = prFromEventPath(getenvAny("GITHUB_EVENT_PATH"))
-	}
-	if pr == 0 {
-		// The standalone/env fallback the removed verb had: a bed or a local run
-		// sets PR_NUMBER rather than an event payload.
-		if v := getenvAny("PR_NUMBER"); v != "" {
-			if n, e := parseInt(v); e == nil {
-				pr = n
-			}
-		}
-	}
-	if pr == 0 {
-		return nil, fmt.Errorf("pr verb: a PR number is required (input.pr, PR_NUMBER, or the event payload)")
-	}
-
-	ctx := context.Background()
-	gh := newGHClient()
-	var (
-		out any
-		err error
-	)
-	switch input.Method {
-	case "pr_meta":
-		out, err = gh.meta(ctx, repo, pr)
-	case "pr_commits":
-		out, err = gh.commits(ctx, repo, pr)
-	case "pr_thread":
-		out, err = gh.thread(ctx, repo, pr)
-	case "pr_files":
-		out, err = gh.filesIndex(ctx, repo, pr)
-	default:
-		return nil, fmt.Errorf("pr verb: unknown method %q", input.Method)
-	}
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return nil, err
-	}
-	return &pb.InvokeReply{ResultJson: raw}, nil
+	return nil, fmt.Errorf("review: unknown op %v", req.GetOp())
 }
 
 func runVerdictSelfTest() (int, error) {

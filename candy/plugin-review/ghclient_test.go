@@ -83,7 +83,6 @@ func TestVerbWireShapesHaveJSONTags(t *testing.T) {
 		{"file-index", ChangedFile{}, []string{"path", "status", "additions", "deletions", "patch_bytes"}},
 		{"commit", Commit{}, []string{"sha", "author", "message"}},
 		{"comment", Comment{}, []string{"id", "author", "created_at", "body"}},
-		{"thread", Thread{}, []string{"head_sha", "base_sha", "comments", "comment_count"}},
 	}
 	for _, c := range cases {
 		b, err := json.Marshal(c.v)

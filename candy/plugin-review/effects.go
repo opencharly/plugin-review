@@ -1,9 +1,7 @@
 package pluginreview
 
 import (
-	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -81,42 +79,4 @@ func usageString(u *llmkit.Usage) string {
 	}
 	return fmt.Sprintf("prompt=%d completion=%d total=%d reasoning=%d",
 		u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.ReasoningTokens)
-}
-
-// ---- conversation helpers for the primed tool loop ----
-
-// conversationBytes is the byte size of the conversation as it will be sent
-// (content + tool-call arguments + reasoning), so the debug trace shows exactly
-// what drives per-turn cost.
-func conversationBytes(msgs []llmkit.Message) int {
-	n := 0
-	for _, m := range msgs {
-		if m.Content != nil {
-			n += len(*m.Content)
-		}
-		n += len(m.Reasoning)
-		for _, tc := range m.ToolCalls {
-			n += len(tc.Arguments) + len(tc.Name)
-		}
-	}
-	return n
-}
-
-// jsonQuote returns s as a JSON string literal (for building a tool-error result).
-func jsonQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-// chat is the ONE model call for a conversation. It is a package var so a test
-// can observe the EXACT tool set that reaches the client (proving the agent is
-// given its tools, not merely that a declaration exists). It does NOT retry: a
-// terminal failure is classified by the caller — re-issuing the identical request
-// is the measured amplifier of the long runs.
-var chat = llmkit.Chat
-
-// chatTurn issues one model request for the conversation, passing the read-only
-// tools so the agent can verify facts the primed context did not settle.
-func chatTurn(ctx context.Context, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
-	return chat(ctx, llm, llmkit.ToSDKMessages(messages), sdkTools())
 }
