@@ -92,3 +92,48 @@ func TestRunFailClosedOnNoVerdict(t *testing.T) {
 		t.Fatalf("an ambiguous verdict must be non-zero, got exit=%d err=%v", exit, err)
 	}
 }
+
+// TestLowerEffort pins the bounded-reasoning fallback ladder: a shared-budget
+// failure retries one step down, so the answer can fit.
+func TestLowerEffort(t *testing.T) {
+	cases := map[string]string{"max": "high", "high": "medium", "medium": "low", "low": "none", "": "none"}
+	for in, want := range cases {
+		if got := lowerEffort(in); got != want {
+			t.Errorf("lowerEffort(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestGenerateRetriesOnceAtLowerEffortOnBudgetExhaustion drives the fallback: the
+// first turn returns an EmptyCompletionError (budget exhausted), the retry (and
+// the following turn) succeed. It asserts the retry happened.
+func TestGenerateRetriesOnceAtLowerEffortOnBudgetExhaustion(t *testing.T) {
+	orig := chat
+	calls := 0
+	chat = func(ctx context.Context, cfg llmkit.Config, msgs []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam) (llmkit.Message, error) {
+		calls++
+		if calls == 1 {
+			if cfg.Params.Reasoning_effort != "high" {
+				t.Errorf("first call effort = %q, want high", cfg.Params.Reasoning_effort)
+			}
+			return llmkit.Message{}, &llmkit.EmptyCompletionError{FinishReason: "length", ReasoningBytes: 10}
+		}
+		if cfg.Params.Reasoning_effort != "medium" {
+			t.Errorf("retry effort = %q, want medium (one step down)", cfg.Params.Reasoning_effort)
+		}
+		return llmkit.Message{Content: strp("Verdict: BLOCK\n")}, nil
+	}
+	t.Cleanup(func() { chat = orig })
+
+	cfg := Config{Repo: "o/r", PR: 1, MaxTurns: 3, MaxTokens: 10, ContextTokens: 1 << 20, ContextMarginTokens: 10, ReasoningEffort: "high"}
+	out, err := generate(context.Background(), cfg, &Context{Meta: PRMeta{Title: "t"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly ONE retry (2 calls), got %d", calls)
+	}
+	if _, _, n := extractVerdict(out); n != 1 {
+		t.Fatalf("the retry must yield a verdict, got %q", out)
+	}
+}
