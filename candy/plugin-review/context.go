@@ -52,10 +52,10 @@ type ChangedFile struct {
 	Patch     string
 }
 
-// Commit is one commit row.
+// Commit is one commit row (render() emits the sha + the first line of the
+// message; the author is not rendered, so it is not carried).
 type Commit struct {
 	SHA     string
-	Author  string
 	Message string
 }
 
@@ -105,8 +105,8 @@ func render(c *Context, cfg Config) string {
 	fmt.Fprintf(&b, "Review pull request %s#%d — %q.\n\n", cfg.Repo, cfg.PR, c.Meta.Title)
 	// The prompt's output format requires the head SHA (and branch context); the
 	// engine MUST supply it, so it is rendered here from the fetched meta.
-	fmt.Fprintf(&b, "Head SHA: `%s` (branch: `%s`; base `%s`; state `%s`; %d files; %d changed lines).\n\n",
-		c.Meta.HeadSHA, c.Meta.Branch, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles, c.Meta.ChangedLines)
+	fmt.Fprintf(&b, "Head SHA: `%s` (branch: `%s`; base `%s`; state `%s`; %d changed files).\n\n",
+		c.Meta.HeadSHA, c.Meta.Branch, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles)
 	b.WriteString("Everything below is the COMPLETE, CURRENT state of this PR: the body, EVERY changed file's full unified diff, the commits, and every comment, in the `<pr_body>`, per-file `### FILE:` and `<comment_thread>` sections. You have all of it; do not assume anything is missing.\n\n")
 
 	b.WriteString("## PR body\n\n<pr_body>\n")

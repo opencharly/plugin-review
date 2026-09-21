@@ -41,7 +41,6 @@ type PRMeta struct {
 	HeadSHA      string
 	BaseSHA      string
 	Branch       string
-	ChangedLines int
 	ChangedFiles int
 }
 
@@ -56,7 +55,7 @@ func (g *ghClient) meta(ctx context.Context, repo string, pr int) (PRMeta, error
 	}
 	return PRMeta{
 		Title: m.Title, State: m.State, HeadSHA: m.HeadSHA, BaseSHA: m.Base,
-		Branch: m.Head, ChangedLines: m.ChangedSum, ChangedFiles: m.FileCount,
+		Branch: m.Head, ChangedFiles: m.FileCount,
 	}, nil
 }
 
@@ -103,7 +102,7 @@ func (g *ghClient) commits(ctx context.Context, repo string, pr int) ([]Commit, 
 	}
 	out := make([]Commit, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Commit{SHA: c.SHA, Author: c.Author, Message: c.Message})
+		out = append(out, Commit{SHA: c.SHA, Message: c.Message})
 	}
 	return out, nil
 }

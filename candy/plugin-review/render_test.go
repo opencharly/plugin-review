@@ -22,7 +22,7 @@ func TestRenderIncludesEveryFileWhole(t *testing.T) {
 		Meta:     PRMeta{Title: "T", HeadSHA: "h", BaseSHA: "b"},
 		Body:     "the body",
 		Files:    files,
-		Commits:  []Commit{{SHA: "0123456789abcdef", Author: "a", Message: "msg"}},
+		Commits:  []Commit{{SHA: "0123456789abcdef", Message: "msg"}},
 		Comments: []Comment{{ID: 7, Author: "u", CreatedAt: "t", Body: "a comment"}},
 	}
 	cfg := Config{Repo: "o/r", PR: 42}
