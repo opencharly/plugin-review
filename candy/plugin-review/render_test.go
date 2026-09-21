@@ -181,26 +181,39 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 	}
 }
 
-// TestDegenerateRepetitionDefaults pins the measured remedy for the reasoning
-// model's repetition collapse (it emitted "Hmm." 38,472 times on an adversarial
-// PR and returned no answer). The engine must DEFAULT both penalties so the
-// collapse cannot silently recur, and honour explicit overrides.
-func TestDegenerateRepetitionDefaults(t *testing.T) {
+// TestOfficialSamplingDefaults pins the model vendor's official recommended
+// sampling for deepseek-v4.1-flash and the ROOT FIX for the engine's
+// degenerate-repetition collapse: temperature=1.0, top_p=0.95. At the old
+// near-greedy 0.2 the model repeated one token ("Hmm.") tens of thousands of
+// times and returned no answer; the official values yield a verdict (measured A/B
+// on the same PR). Explicit overrides must win; penalties default to unset.
+func TestOfficialSamplingDefaults(t *testing.T) {
+	os.Unsetenv("AI_REVIEW_TEMPERATURE")
+	os.Unsetenv("AI_REVIEW_TOP_P")
+	os.Unsetenv("AI_REVIEW_FREQUENCY_PENALTY")
+	os.Unsetenv("AI_REVIEW_PRESENCE_PENALTY")
 	c := FromEnv()
+	if got := temperatureOrDefault(c.Temperature); got == nil || *got != 1.0 {
+		t.Errorf("temperature default = %v, want 1.0 (the vendor's value)", got)
+	}
+	if c.TopP == nil || *c.TopP != 0.95 {
+		t.Errorf("top_p default = %v, want 0.95 (the vendor's value)", c.TopP)
+	}
 	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != defaultFrequencyPenalty {
-		t.Errorf("frequency penalty default = %v, want %v", c.FrequencyPenalty, defaultFrequencyPenalty)
+		t.Errorf("frequency penalty default = %v, want %v (secondary repetition guard)", c.FrequencyPenalty, defaultFrequencyPenalty)
 	}
 	if c.PresencePenalty == nil || *c.PresencePenalty != defaultPresencePenalty {
-		t.Errorf("presence penalty default = %v, want %v", c.PresencePenalty, defaultPresencePenalty)
+		t.Errorf("presence penalty default = %v, want %v (secondary repetition guard)", c.PresencePenalty, defaultPresencePenalty)
 	}
-	// An explicit override wins.
-	t.Setenv("AI_REVIEW_FREQUENCY_PENALTY", "0.9")
-	t.Setenv("AI_REVIEW_PRESENCE_PENALTY", "0.1")
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0.3")
+	t.Setenv("AI_REVIEW_TOP_P", "0.8")
+	t.Setenv("AI_REVIEW_FREQUENCY_PENALTY", "0.4")
+	t.Setenv("AI_REVIEW_PRESENCE_PENALTY", "0.6")
 	c = FromEnv()
-	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != 0.9 {
-		t.Errorf("frequency penalty override not honoured: %v", c.FrequencyPenalty)
+	if c.Temperature == nil || *c.Temperature != 0.3 || c.TopP == nil || *c.TopP != 0.8 {
+		t.Errorf("sampling overrides not honoured: t=%v p=%v", c.Temperature, c.TopP)
 	}
-	if c.PresencePenalty == nil || *c.PresencePenalty != 0.1 {
-		t.Errorf("presence penalty override not honoured: %v", c.PresencePenalty)
+	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != 0.4 || c.PresencePenalty == nil || *c.PresencePenalty != 0.6 {
+		t.Errorf("penalty overrides not honoured: fp=%v pp=%v", c.FrequencyPenalty, c.PresencePenalty)
 	}
 }

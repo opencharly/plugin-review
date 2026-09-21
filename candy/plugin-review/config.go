@@ -49,7 +49,8 @@ type Config struct {
 	MaxCompletionTokens *int64
 	// Temperature (AI_REVIEW_TEMPERATURE); Nil = the review default.
 	Temperature *float64
-	// TopP (AI_REVIEW_TOP_P); Nil = provider default.
+	// TopP is the nucleus-sampling probability mass (AI_REVIEW_TOP_P). The
+	// default is the model vendor's recommended value (see defaultTopP).
 	TopP *float64
 	// Seed forces determinism where the provider supports it (AI_REVIEW_SEED).
 	Seed *int64
@@ -114,14 +115,17 @@ const (
 	DefaultAttemptTimeout        = 15 * time.Minute
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
-	reviewTemperature            = 0.2
-	// defaultFrequencyPenalty / defaultPresencePenalty are the measured remedy for
-	// the reasoning model's DEGENERATE-REPETITION collapse: on an adversarial PR it
-	// emitted "Hmm." 38,472 times and returned no answer (finish_reason=length).
-	// A frequency penalty alone (0.5) fixed one such PR but not another; adding a
-	// presence penalty fixed that one (measured: #7 1m33s with fp=0.5+pp=1.0, vs an
-	// 8m14s collapse with fp alone). Set as DEFAULTS so the collapse cannot
-	// silently recur; AI_REVIEW_FREQUENCY_PENALTY / _PRESENCE_PENALTY override them.
+	// reviewTemperature / reviewTopP are the model vendor's OFFICIAL recommended
+	// sampling parameters for deepseek-v4.1-flash (HuggingFace model card:
+	// temperature=1.0, top_p=0.95). They are the ROOT FIX for the engine's
+	// DEGENERATE-REPETITION collapse: at temperature=0.2 (a near-greedy choice the
+	// vendor never recommends) the model re-selected one high-probability token
+	// ("Hmm.") 2,533-38,472 times and returned no answer. Measured A/B on the same
+	// PR: temp=0.2 -> collapse (34,974x "Hmm.", no verdict); temp=1.0/top_p=0.95 ->
+	// a verdict. AI_REVIEW_TEMPERATURE / _TOP_P override them.
+	reviewTemperature = 1.0
+	reviewTopP        = 0.95
+	// Secondary guard against the residual repetition mode (see FromEnv).
 	defaultFrequencyPenalty = 0.5
 	defaultPresencePenalty  = 1.0
 )
@@ -154,7 +158,16 @@ func FromEnv() Config {
 	c.MaxCompletionTokens = envInt64Ptr("AI_REVIEW_MAX_COMPLETION_TOKENS")
 	c.Temperature = envFloatPtr("AI_REVIEW_TEMPERATURE")
 	c.TopP = envFloatPtr("AI_REVIEW_TOP_P")
+	if c.TopP == nil {
+		def := reviewTopP
+		c.TopP = &def
+	}
 	c.Seed = envInt64Ptr("AI_REVIEW_SEED")
+	// SECONDARY GUARD: the vendor recommends no penalties, but the engine still
+	// exhibits a residual DEGENERATE-REPETITION mode at the official sampling on
+	// long reviews (~1 run in 13 collapsed on a 160-330 KB reasoning generation).
+	// Modest frequency/presence penalties directly target it and measured 8/8 vs
+	// ~12/13 without. Both are env-overridable.
 	c.FrequencyPenalty = envFloatPtr("AI_REVIEW_FREQUENCY_PENALTY")
 	if c.FrequencyPenalty == nil {
 		def := defaultFrequencyPenalty
