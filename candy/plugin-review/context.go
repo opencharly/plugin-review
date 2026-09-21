@@ -8,18 +8,24 @@ import (
 
 // context.go — THE way the review input is assembled.
 //
-// Design (first principles): a review is ONE coherent context. Fragmenting it
-// across a tool-calling loop is what caused the runaway thinking — the model
-// cannot see its own prior reasoning between turns, so it RE-DERIVES everything
-// on the synthesis turn from partial tool results. Measured on a real 25-file PR:
-// the fragmented loop produced 371 KB of reasoning over three runaway synthesis
-// turns (8m25s, no verdict within the cap); the SAME context assembled whole
-// produced 50 KB of reasoning, finish_reason=stop, and a verdict in 82.6s — and
-// found 8/8 planted defects with exact line numbers.
+// Design (first principles): a review needs ONE coherent context UP FRONT.
+// Fragmenting it across a turn-by-turn tool loop is what caused the runaway
+// thinking — the model cannot see its own prior reasoning between turns, so it
+// RE-DERIVES everything on the synthesis turn from partial tool results.
 //
-// So there is exactly ONE path: gather every fact, emit ONE message. There is no
-// tool loop, no per-file round-trip, no fixture branch, and no plan executor. The
-// assembler is the single reader of the PR; it reads EVERY changed file's full
+// Measured on a real 25-file PR (spec#140), all same model/effort:
+//   - the fragmented tool loop: 371 KB of reasoning over three runaway synthesis
+//     turns, 8m25s, no verdict within the cap;
+//   - the SAME context delivered whole in ONE message, NO tools: 50 KB of
+//     reasoning, finish_reason=stop, verdict in 82.6s (and 8/8 planted defects
+//     found with exact line numbers in a separate anti-skim probe);
+//   - the SHIPPED design (prime + tools available): ONE turn, finish_reason=stop,
+//     verdict in 2m55s — the tools stay available for follow-up but the primed
+//     context means they are rarely needed.
+//
+// So the assembler reads EVERY changed file's full patch and emits ONE priming
+// message; there is no per-file round-trip, no fixture branch, and no plan
+// executor. The tool loop remains only as a verification surface (review.go).
 // patch (never a sample, never truncated) — a review cannot skim what it was
 // never given, and it is given everything.
 //

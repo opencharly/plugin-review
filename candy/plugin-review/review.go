@@ -51,14 +51,13 @@ func Review(ctx context.Context, cfg Config) (string, error) {
 // context (ONE message), then runs a bounded tool loop in which the read-only
 // tools remain available for verification/follow-up.
 //
-// Why prime AND tools (RCA): the old engine assembled the context turn by turn
-// through the tools, and message reasoning is NOT re-sent between turns, so the
-// synthesis turn re-derived everything from partial tool results — measured at
-// 371 KB of reasoning over three runaway synthesis turns (8m25s) on a 25-file
-// PR. Delivering the whole context in ONE priming message collapsed that to
-// 50 KB with a verdict (82.6s). Keeping the tools means the agent can still
-// verify a count or re-read a fact; because it already HAS the full context it
-// has no need to reconstruct it, so the loop converges fast.
+// Why prime AND tools (RCA, same 25-file PR spec#140, same model/effort):
+//   - the fragmented tool loop: 371 KB of reasoning, 3 runaway synthesis turns, 8m25s, no verdict;
+//   - primed whole-context with NO tools: 50 KB of reasoning, verdict in 82.6s;
+//   - the SHIPPED form (prime + tools available): ONE turn, verdict in 2m55s.
+//
+// Keeping the tools lets the agent verify a count or re-read a fact; because it
+// already HAS the full context it rarely needs to, so the loop converges fast.
 func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 	prompt := cfg.EffectivePrompt()
 	user := c.Assembled

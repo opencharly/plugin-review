@@ -75,6 +75,32 @@ func (g *ghClient) body(ctx context.Context, repo string, pr int) (string, error
 	return raw.Body, nil
 }
 
+// filesIndex returns the changed-file INDEX: metadata + patch_bytes, NO patch
+// text. This is the ONE shape the `pr_files` verb AND the get_pr_files tool
+// return (R3). Full patches are read per file via files()/get_pr_file.
+func (g *ghClient) filesIndex(ctx context.Context, repo string, pr int) (struct {
+	Files           []ChangedFile `json:"files"`
+	FileCount       int           `json:"file_count"`
+	TotalPatchBytes int           `json:"total_patch_bytes"`
+}, error) {
+	var out struct {
+		Files           []ChangedFile `json:"files"`
+		FileCount       int           `json:"file_count"`
+		TotalPatchBytes int           `json:"total_patch_bytes"`
+	}
+	files, err := g.files(ctx, repo, pr)
+	if err != nil {
+		return out, err
+	}
+	out.Files = make([]ChangedFile, 0, len(files))
+	for _, f := range files {
+		out.Files = append(out.Files, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, PatchBytes: f.PatchBytes})
+		out.TotalPatchBytes += f.PatchBytes
+	}
+	out.FileCount = len(out.Files)
+	return out, nil
+}
+
 func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFile, error) {
 	cli, err := g.client()
 	if err != nil {

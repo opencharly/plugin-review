@@ -141,7 +141,7 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	case "pr_thread":
 		out, err = gh.thread(ctx, repo, pr)
 	case "pr_files":
-		out, err = gh.files(ctx, repo, pr)
+		out, err = gh.filesIndex(ctx, repo, pr)
 	default:
 		return nil, fmt.Errorf("pr verb: unknown method %q", input.Method)
 	}

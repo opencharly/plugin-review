@@ -75,17 +75,7 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, name, args
 		body, err := g.body(ctx, repo, pr)
 		return marshal(map[string]string{"body": body}, err)
 	case "get_pr_files":
-		files, err := g.files(ctx, repo, pr)
-		if err != nil {
-			return "", err
-		}
-		idx := make([]ChangedFile, 0, len(files))
-		total := 0
-		for _, f := range files {
-			idx = append(idx, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, PatchBytes: len(f.Patch)})
-			total += len(f.Patch)
-		}
-		return marshal(map[string]any{"files": idx, "file_count": len(idx), "total_patch_bytes": total}, nil)
+		return marshal(g.filesIndex(ctx, repo, pr))
 	case "get_pr_file":
 		var a struct {
 			Path string `json:"path"`
