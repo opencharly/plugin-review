@@ -231,3 +231,16 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 		t.Errorf("invalid AI_REVIEW_CONTEXT_TOKENS must fall back to %d, got %d", DefaultContextTokens, c.ContextTokens)
 	}
 }
+
+// TestParseCommandRejectsEmptyRepo pins finding 6's fix: parseCommand CAN fail,
+// so the `if err != nil` arms in run() are reachable and tested.
+func TestParseCommandRejectsEmptyRepo(t *testing.T) {
+	t.Setenv("PR_NUMBER", "1")
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	if _, _, err := parseCommand([]string{"pr", "7", "--repo", ""}); err == nil {
+		t.Fatal("--repo with an empty value must error")
+	}
+	if _, _, err := parseCommand([]string{"pr", "7", "--repo"}); err == nil {
+		t.Fatal("--repo with no value must error")
+	}
+}

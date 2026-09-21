@@ -79,7 +79,7 @@ func TestVerbWireShapesHaveJSONTags(t *testing.T) {
 		v    any
 		want []string
 	}{
-		{"meta", PRMeta{}, []string{"title", "state", "head_sha", "base_sha", "changed_files"}},
+		{"meta", PRMeta{}, []string{"title", "state", "head_sha", "base_sha", "branch", "changed_files"}},
 		{"file-index", ChangedFile{}, []string{"path", "status", "additions", "deletions", "patch_bytes"}},
 		{"commit", Commit{}, []string{"sha", "author", "message"}},
 		{"comment", Comment{}, []string{"id", "author", "created_at", "body"}},

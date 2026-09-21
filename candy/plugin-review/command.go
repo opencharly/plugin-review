@@ -31,9 +31,11 @@ func parseCommand(args []string) (Config, string, error) {
 		case a == "--self-test-verdict":
 			mode = "self-test-verdict"
 		case a == "--repo":
-			if v, ok := next(); ok {
-				cfg.Repo = v
+			v, ok := next()
+			if !ok || strings.TrimSpace(v) == "" {
+				return Config{}, "", fmt.Errorf("--repo requires an owner/repo value")
 			}
+			cfg.Repo = v
 		case a == "--out" || a == "-o":
 			if v, ok := next(); ok {
 				cfg.OutPath = v

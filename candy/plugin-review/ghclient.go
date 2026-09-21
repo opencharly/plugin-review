@@ -41,6 +41,7 @@ type PRMeta struct {
 	State        string `json:"state"`
 	HeadSHA      string `json:"head_sha"`
 	BaseSHA      string `json:"base_sha"`
+	Branch       string `json:"branch"`
 	ChangedLines int    `json:"changed_lines"`
 	ChangedFiles int    `json:"changed_files"`
 }
@@ -56,7 +57,7 @@ func (g *ghClient) meta(ctx context.Context, repo string, pr int) (PRMeta, error
 	}
 	return PRMeta{
 		Title: m.Title, State: m.State, HeadSHA: m.HeadSHA, BaseSHA: m.Base,
-		ChangedLines: m.ChangedSum, ChangedFiles: m.FileCount,
+		Branch: m.Head, ChangedLines: m.ChangedSum, ChangedFiles: m.FileCount,
 	}, nil
 }
 
@@ -164,9 +165,9 @@ func (g *ghClient) thread(ctx context.Context, repo string, pr int) (Thread, err
 	for _, c := range cs {
 		idx = append(idx, CommentIndex{ID: c.ID, Author: c.Author, CreatedAt: c.CreatedAt, Bytes: len(c.Body), Preview: firstLine(c.Body, 200)})
 	}
-	var meta PRMeta
-	if m, merr := g.meta(ctx, repo, pr); merr == nil {
-		meta = m
+	meta, err := g.meta(ctx, repo, pr)
+	if err != nil {
+		return Thread{}, err
 	}
 	return Thread{HeadSHA: meta.HeadSHA, BaseSHA: meta.BaseSHA, Comments: idx, CommentCount: len(idx)}, nil
 }

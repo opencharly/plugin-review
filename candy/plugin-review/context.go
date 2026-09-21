@@ -107,9 +107,9 @@ func render(c *Context, cfg Config) string {
 	fmt.Fprintf(&b, "Review pull request %s#%d — %q.\n\n", cfg.Repo, cfg.PR, c.Meta.Title)
 	// The prompt's output format requires the head SHA (and branch context); the
 	// engine MUST supply it, so it is rendered here from the fetched meta.
-	fmt.Fprintf(&b, "Head SHA: `%s` (base `%s`, state `%s`, %d files, %d changed lines).\n\n",
-		c.Meta.HeadSHA, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles, c.Meta.ChangedLines)
-	b.WriteString("Everything below is the COMPLETE, CURRENT state of this PR: the body, EVERY changed file's full unified diff, the commits, and every comment. You have all of it; do not assume anything is missing.\n\n")
+	fmt.Fprintf(&b, "Head SHA: `%s` (branch: `%s`; base `%s`; state `%s`; %d files; %d changed lines).\n\n",
+		c.Meta.HeadSHA, c.Meta.Branch, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles, c.Meta.ChangedLines)
+	b.WriteString("Everything below is the COMPLETE, CURRENT state of this PR: the body, EVERY changed file's full unified diff, the commits, and every comment, in the `<pr_body>`, per-file `### FILE:` and `<comment_thread>` sections. You have all of it; do not assume anything is missing.\n\n")
 
 	b.WriteString("## PR body\n\n<pr_body>\n")
 	b.WriteString(c.Body)
@@ -128,12 +128,12 @@ func render(c *Context, cfg Config) string {
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "## Comment thread (%d comments)\n\n", len(c.Comments))
+	fmt.Fprintf(&b, "## Comment thread (%d comments)\n\n<comment_thread>\n", len(c.Comments))
 	for _, cm := range c.Comments {
 		fmt.Fprintf(&b, "### Comment %d by %s at %s\n\n%s\n\n", cm.ID, cm.Author, cm.CreatedAt, cm.Body)
 	}
 
-	b.WriteString("Review EVERY changed file's diff above LINE BY LINE, consider every comment above, re-derive each claim against the current state, then end with exactly `Verdict: PASS` or `Verdict: BLOCK` on the final line.\n")
+	b.WriteString("</comment_thread>\n\nReview EVERY changed file's diff above LINE BY LINE, consider every comment above, re-derive each claim against the current state, then end with exactly `Verdict: PASS` or `Verdict: BLOCK` on the final line.\n")
 	return b.String()
 }
 
