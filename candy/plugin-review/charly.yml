@@ -24,9 +24,13 @@ plugin-review:
         # every env the engine reads, so a knob cannot silently fail to reach it.
         var:
             # The model vendor's OFFICIAL recommended sampling (HuggingFace card),
-            # the ROOT FIX for the degenerate-repetition collapse at temp=0.2.
+            # the root fix for the dominant degenerate-repetition collapse at temp=0.2.
             AI_REVIEW_TEMPERATURE: "1.0"
             AI_REVIEW_TOP_P: "0.95"
+            # Measured-best repetition guard (config.go defaults): 16/17 runs OK
+            # WITHOUT the penalties vs 26/26 WITH them at the sampling above.
+            AI_REVIEW_FREQUENCY_PENALTY: "0.5"
+            AI_REVIEW_PRESENCE_PENALTY: "1.0"
             AI_REVIEW_PROVIDER: ollama-cloud
             AI_REVIEW_MODEL: deepseek-v4.1-flash
             AI_REVIEW_BASE_URL: https://ollama.com/v1
@@ -54,7 +58,7 @@ plugin-review:
             - name: AI_REVIEW_MAX_COMPLETION_TOKENS
               description: "Answer-only token budget (providers that separate it)."
             - name: AI_REVIEW_TEMPERATURE
-              description: "Sampling temperature (default 0.2)."
+              description: "Sampling temperature (vendor default 1.0)."
             - name: AI_REVIEW_TOP_P
               description: "Nucleus sampling probability mass."
             - name: AI_REVIEW_SEED

@@ -1,9 +1,11 @@
 package pluginreview
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -96,6 +98,63 @@ func diff(a, b map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestModelDefaultsMatchCharlyYML pins the SHIPPED model-behaviour defaults to a
+// single value set across both surfaces: config.go's constants (used when charly
+// invokes the plugin with a bare environment) and charly.yml's var: block (used
+// when charly materializes the candy's declared defaults). A change to one
+// without the other would silently ship two different best-known configurations.
+func TestModelDefaultsMatchCharlyYML(t *testing.T) {
+	b, err := os.ReadFile("charly.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	declared := map[string]string{}
+	inVar := false
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "var:") {
+			inVar = true
+			continue
+		}
+		if inVar && strings.HasPrefix(strings.TrimSpace(line), "env_accept:") {
+			break
+		}
+		if !inVar {
+			continue
+		}
+		re := regexp.MustCompile(`^\s+([A-Z][A-Z0-9_]+):\s*"?([^"\s]+)"?\s*$`)
+		if m := re.FindStringSubmatch(line); m != nil {
+			declared[m[1]] = m[2]
+		}
+	}
+	wantFloat := map[string]float64{
+		"AI_REVIEW_TEMPERATURE":       reviewTemperature,
+		"AI_REVIEW_TOP_P":             reviewTopP,
+		"AI_REVIEW_FREQUENCY_PENALTY": defaultFrequencyPenalty,
+		"AI_REVIEW_PRESENCE_PENALTY":  defaultPresencePenalty,
+	}
+	for k, v := range wantFloat {
+		got, ok := declared[k]
+		if !ok {
+			t.Errorf("charly.yml var:%s missing — the shipped default must match config.go (%g)", k, v)
+			continue
+		}
+		f, err := strconv.ParseFloat(got, 64)
+		if err != nil || f != v {
+			t.Errorf("charly.yml var:%s = %q, want %g — the shipped default must match config.go", k, got, v)
+		}
+	}
+	wantStr := map[string]string{
+		"AI_REVIEW_REASONING_EFFORT": DefaultReasoningEffort,
+		"AI_REVIEW_MAX_TOKENS":       fmt.Sprintf("%d", DefaultMaxTokens),
+	}
+	for k, v := range wantStr {
+		if got, ok := declared[k]; !ok || got != v {
+			t.Errorf("charly.yml var:%s = %q (present=%v), want %q — the shipped default must match config.go", k, got, ok, v)
+		}
+	}
 }
 
 // TestVerdictMatching pins the line-anchored verdict contract the gate parses.

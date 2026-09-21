@@ -187,7 +187,7 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 // near-greedy 0.2 the model repeated one token ("Hmm.") tens of thousands of
 // times and returned no answer; the official values yield a verdict (measured A/B
 // on the same PR). Explicit overrides must win; the frequency/presence penalties
-// default to the secondary-guard values and are likewise overridable.
+// default to the measured-best guard values and are likewise overridable.
 func TestOfficialSamplingDefaults(t *testing.T) {
 	os.Unsetenv("AI_REVIEW_TEMPERATURE")
 	os.Unsetenv("AI_REVIEW_TOP_P")
@@ -201,10 +201,10 @@ func TestOfficialSamplingDefaults(t *testing.T) {
 		t.Errorf("top_p default = %v, want 0.95 (the vendor's value)", c.TopP)
 	}
 	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != defaultFrequencyPenalty {
-		t.Errorf("frequency penalty default = %v, want %v (secondary repetition guard)", c.FrequencyPenalty, defaultFrequencyPenalty)
+		t.Errorf("frequency penalty default = %v, want %v (measured-best guard)", c.FrequencyPenalty, defaultFrequencyPenalty)
 	}
 	if c.PresencePenalty == nil || *c.PresencePenalty != defaultPresencePenalty {
-		t.Errorf("presence penalty default = %v, want %v (secondary repetition guard)", c.PresencePenalty, defaultPresencePenalty)
+		t.Errorf("presence penalty default = %v, want %v (measured-best guard)", c.PresencePenalty, defaultPresencePenalty)
 	}
 	t.Setenv("AI_REVIEW_TEMPERATURE", "0.3")
 	t.Setenv("AI_REVIEW_TOP_P", "0.8")

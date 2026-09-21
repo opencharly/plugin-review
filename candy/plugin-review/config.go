@@ -125,7 +125,8 @@ const (
 	// a verdict. AI_REVIEW_TEMPERATURE / _TOP_P override them.
 	reviewTemperature = 1.0
 	reviewTopP        = 0.95
-	// Secondary guard against the residual repetition mode (see FromEnv).
+	// Measured-best repetition guard (see FromEnv): 16/17 runs OK WITHOUT the
+	// penalties vs 26/26 WITH them, at the official sampling above.
 	defaultFrequencyPenalty = 0.5
 	defaultPresencePenalty  = 1.0
 )
@@ -163,11 +164,12 @@ func FromEnv() Config {
 		c.TopP = &def
 	}
 	c.Seed = envInt64Ptr("AI_REVIEW_SEED")
-	// SECONDARY GUARD: the vendor recommends no penalties, but the engine still
-	// exhibits a residual DEGENERATE-REPETITION mode at the official sampling on
-	// long reviews (~1 run in 13 collapsed on a 160-330 KB reasoning generation).
-	// Modest frequency/presence penalties directly target it and measured 8/8 vs
-	// ~12/13 without. Both are env-overridable.
+	// MEASURED-BEST repetition guard. The vendor recommends no penalties, but at
+	// the official sampling alone the engine still collapses on the longest
+	// generations: measured 16/17 runs OK (1 collapse) WITHOUT the guard vs 26/26
+	// WITH it. Penalties directly suppress the repetition precursor that causes
+	// that collapse, so the shipped default is the measured-best configuration,
+	// not the vendor-pure one. Both are env-overridable.
 	c.FrequencyPenalty = envFloatPtr("AI_REVIEW_FREQUENCY_PENALTY")
 	if c.FrequencyPenalty == nil {
 		def := defaultFrequencyPenalty
