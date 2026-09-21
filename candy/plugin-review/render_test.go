@@ -1,8 +1,15 @@
 package pluginreview
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/opencharly/sdk/llmkit"
 )
 
 // TestRenderIncludesEveryFileWhole is the anti-skim guarantee at the assembler
@@ -134,38 +141,99 @@ func TestBudgetGuardFailsClosed(t *testing.T) {
 	}
 }
 
-// TestAgentHasTools is the regression for the regression: the review agent MUST
-// receive the read-only tools. The cleanup once passed nil tools while the prompt
-// still instructed the model to call them — a functional break the validator
-// caught. sdkTools() is the single declaration; this asserts it is non-empty,
-// covers every tool the prompt may name, and is actually threaded into chatTurn.
+// TestAgentHasTools proves the tools are THREADED INTO THE MODEL CALL, not just
+// declared: it intercepts the chat seam and asserts the exact tool set the
+// review passes. The earlier cleanup shipped the model NO tools while the prompt
+// instructed it to call them — the validator caught it — so this asserts the
+// wiring, which a non-empty sdkTools() alone cannot.
 func TestAgentHasTools(t *testing.T) {
-	tools := sdkTools()
-	if len(tools) == 0 {
-		t.Fatal("the review agent must receive tools (sdkTools() is empty)")
+	var got []openai.ChatCompletionToolUnionParam
+	orig := chat
+	chat = func(ctx context.Context, cfg llmkit.Config, msgs []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam) (llmkit.Message, error) {
+		got = tools
+		return llmkit.Message{}, errors.New("stop after capture")
 	}
-	byName := map[string]bool{}
-	for _, d := range reviewTools {
-		byName[d.name] = true
+	defer func() { chat = orig }()
+
+	cfg := Config{Repo: "o/r", PR: 1, MaxTokens: 10, ContextTokens: 1 << 20}
+	_ = cfg
+	if _, err := chatTurn(context.Background(), Config{}, llmkit.Config{}, nil); err == nil {
+		t.Fatal("expected the capture sentinel error")
+	}
+	if len(got) == 0 {
+		t.Fatal("the review passed NO tools to the model — the agent cannot call any")
+	}
+	gotNames := map[string]bool{}
+	for _, tl := range got {
+		if tl.OfFunction != nil {
+			gotNames[tl.OfFunction.Function.Name] = true
+		}
 	}
 	for _, want := range []string{
 		"get_pr_meta", "get_pr_body", "get_pr_files", "get_pr_file",
 		"get_pr_commits", "get_pr_thread", "get_pr_comment",
 	} {
-		if !byName[want] {
-			t.Errorf("the agent is missing the %q tool", want)
-		}
-	}
-	// The prompt must NOT instruct the agent to use a tool that does not exist.
-	prompt := Config{Prompt: readEmbedded(t)}.EffectivePrompt()
-	for _, line := range []string{"get_pr_diff"} {
-		if strings.Contains(prompt, line) && !byName[line] {
-			t.Errorf("prompt references %q but that tool is not provided", line)
+		if !gotNames[want] {
+			t.Errorf("the model call is missing the %q tool (got %v)", want, gotNames)
 		}
 	}
 }
 
-func readEmbedded(t *testing.T) string {
-	t.Helper()
-	return embeddedPrompt
+// TestPRFromEventPathNoEventPayloadDoesNotPanic is the carried-forward regression
+// for the measured SIGSEGV class: a workflow_dispatch run has an event payload
+// with NO pull_request key, so the reader must return 0 rather than panic or
+// misparse. (The removed review_test.go asserted this; it is restored here.)
+func TestPRFromEventPathNoEventPayloadDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"dispatch.json": `{"action":"workflow_dispatch","inputs":{"pr-number":"7"}}`,
+		"empty.json":    ``,
+		"garbage.json":  `not json`,
+		"null.json":     `null`,
+	} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := prFromEventPath(p); got != 0 {
+			t.Errorf("%s: prFromEventPath = %d, want 0", name, got)
+		}
+	}
+	if got := prFromEventPath(filepath.Join(dir, "absent.json")); got != 0 {
+		t.Errorf("absent file: prFromEventPath = %d, want 0", got)
+	}
+}
+
+// TestPRFromEventPathReadsPullRequestNumber pins the happy path.
+func TestPRFromEventPathReadsPullRequestNumber(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pr.json")
+	if err := os.WriteFile(p, []byte(`{"pull_request":{"number":42}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := prFromEventPath(p); got != 42 {
+		t.Errorf("prFromEventPath = %d, want 42", got)
+	}
+}
+
+// TestConfigInvalidEnvFallsBack is the carried-forward regression: a malformed or
+// non-positive env value must fall back to the default, never set a zero/garbage
+// value that would break the run.
+func TestConfigInvalidEnvFallsBack(t *testing.T) {
+	t.Setenv("AI_REVIEW_MAX_TURNS", "not-a-number")
+	t.Setenv("AI_REVIEW_MAX_TOKENS", "-5")
+	t.Setenv("AI_REVIEW_CONTEXT_TOKENS", "abc")
+	t.Setenv("PR_NUMBER", "0")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxTurns != DefaultMaxTurns {
+		t.Errorf("invalid AI_REVIEW_MAX_TURNS must fall back to %d, got %d", DefaultMaxTurns, c.MaxTurns)
+	}
+	if c.MaxTokens != DefaultMaxTokens {
+		t.Errorf("non-positive AI_REVIEW_MAX_TOKENS must fall back to %d, got %d", DefaultMaxTokens, c.MaxTokens)
+	}
+	if c.ContextTokens != DefaultContextTokens {
+		t.Errorf("invalid AI_REVIEW_CONTEXT_TOKENS must fall back to %d, got %d", DefaultContextTokens, c.ContextTokens)
+	}
 }

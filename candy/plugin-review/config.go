@@ -210,17 +210,22 @@ func envStrLookup(name, def string) string {
 	return def
 }
 
+// envInt reads a POSITIVE int; a missing, unparsable, or non-positive value falls
+// back to def (a count has no meaningful <=0 value).
 func envInt(name string, def int) int {
 	if v, ok := os.LookupEnv(name); ok {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
 			return n
 		}
 	}
 	return def
 }
 
+// envInt64 reads a POSITIVE int64; a missing, unparsable, or non-positive value
+// falls back to def. Counts (budgets, turns) have no meaningful <=0 value, so a
+// stray "-5" must not become the setting.
 func envInt64(name string, def int64) int64 {
-	if p := envInt64Ptr(name); p != nil {
+	if p := envInt64Ptr(name); p != nil && *p > 0 {
 		return *p
 	}
 	return def

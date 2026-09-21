@@ -39,29 +39,31 @@ type Context struct {
 	Assembled string // the exact user message sent to the model
 }
 
-// ChangedFile is one changed file with its FULL patch.
+// ChangedFile is one changed file with its FULL patch. The json tags are the
+// verb:pr WIRE shape (the review's render() uses the fields directly).
 type ChangedFile struct {
-	Path      string
-	Status    string
-	Additions int
-	Deletions int
-	Patch     string
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Patch     string `json:"patch"`
 }
 
-// Commit is one commit row.
+// Commit is one commit row (json tags = the verb:pr wire shape).
 type Commit struct {
-	SHA     string
-	Author  string
-	Message string
+	SHA     string `json:"sha"`
+	Author  string `json:"author"`
+	Message string `json:"message"`
 }
 
 // Comment is one comment with its FULL body — the prompt requires every comment
 // be considered and dispositioned, so the assembler delivers them all whole.
+// The json tags are the verb:pr wire shape.
 type Comment struct {
-	ID        int
-	Author    string
-	CreatedAt string
-	Body      string
+	ID        int    `json:"id"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Body      string `json:"body"`
 }
 
 // assemble gathers the complete PR context in ONE pass from the canonical client.
@@ -99,6 +101,10 @@ func assemble(ctx context.Context, cfg Config, gh *ghClient) (*Context, error) {
 func render(c *Context, cfg Config) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Review pull request %s#%d — %q.\n\n", cfg.Repo, cfg.PR, c.Meta.Title)
+	// The prompt's output format requires the head SHA (and branch context); the
+	// engine MUST supply it, so it is rendered here from the fetched meta.
+	fmt.Fprintf(&b, "Head SHA: `%s` (base `%s`, state `%s`, %d files, %d changed lines).\n\n",
+		c.Meta.HeadSHA, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles, c.Meta.ChangedLines)
 	b.WriteString("Everything below is the COMPLETE, CURRENT state of this PR: the body, EVERY changed file's full unified diff, the commits, and every comment. You have all of it; do not assume anything is missing.\n\n")
 
 	b.WriteString("## PR body\n\n<pr_body>\n")

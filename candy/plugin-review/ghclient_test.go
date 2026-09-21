@@ -2,6 +2,7 @@ package pluginreview
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,5 +66,34 @@ func TestValidateRejectsBareRepo(t *testing.T) {
 	cfg := Config{PR: 1, Repo: "spec", ContextTokens: 1000, MaxTokens: 10}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("a bare repo name must be rejected (the bare-name 404 class)")
+	}
+}
+
+// TestVerbWireShapesHaveJSONTags pins the verb:pr WIRE contract. The cleanup once
+// dropped the struct tags, silently changing every verb result from snake_case
+// (`head_sha`, `path`, `sha`, `id`, `comment_count`) to Go field names — a
+// consumer-visible break. These tests assert the exact keys consumers read.
+func TestVerbWireShapesHaveJSONTags(t *testing.T) {
+	cases := []struct {
+		name string
+		v    any
+		want []string
+	}{
+		{"meta", PRMeta{}, []string{"title", "state", "head_sha", "base_sha", "changed_files"}},
+		{"file", ChangedFile{}, []string{"path", "status", "additions", "deletions", "patch"}},
+		{"commit", Commit{}, []string{"sha", "author", "message"}},
+		{"comment", Comment{}, []string{"id", "author", "created_at", "body"}},
+		{"thread", Thread{}, []string{"head_sha", "base_sha", "comments", "comment_count"}},
+	}
+	for _, c := range cases {
+		b, err := json.Marshal(c.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range c.want {
+			if !strings.Contains(string(b), `"`+key+`"`) {
+				t.Errorf("%s: wire shape is missing %q (got %s)", c.name, key, b)
+			}
+		}
 	}
 }

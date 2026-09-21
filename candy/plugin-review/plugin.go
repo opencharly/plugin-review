@@ -36,32 +36,37 @@ func NewMeta() pb.PluginMetaServer {
 
 // CliMain is the OUT-OF-PROCESS CLI-mode entry (sdk.Main dual mode): fork/exec'd
 // by charly with the pass-through tokens after `charly review <args>`.
-func CliMain(args []string) int {
+// run is the ONE command core: parse the args, dispatch the mode, and return the
+// exit code AND the error (never stderr-only). Both the out-of-process CLI entry
+// (CliMain) and the in-proc Invoke path use it, so they cannot diverge.
+func run(args []string) (int, error) {
 	cfg, mode, err := parseCommand(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "review: "+err.Error())
-		return 2
+		return 2, err
 	}
 	switch mode {
 	case "self-test":
-		fmt.Println("plugin-review self-test: NEW-CLEAN-ENGINE-MARKER (command:review resolves)")
-		return 0
+		fmt.Println("plugin-review self-test: ok (command:review resolves)")
+		return 0, nil
 	case "self-test-verdict":
-		exit, err := runVerdictSelfTest()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "review: "+err.Error())
-		}
-		return exit
+		return runVerdictSelfTest()
 	default:
 		exit, err := Run(context.Background(), cfg)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "review: "+err.Error())
-			if exit == 0 {
-				exit = 1
-			}
+		if err != nil && exit == 0 {
+			exit = 1
 		}
-		return exit
+		return exit, err
 	}
+}
+
+// CliMain is the OUT-OF-PROCESS CLI entry (fork/exec'd by charly). It reports the
+// error on stderr and returns the exit code — the only place stderr is used.
+func CliMain(args []string) int {
+	exit, err := run(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "review: "+err.Error())
+	}
+	return exit
 }
 
 type provider struct{ pb.UnimplementedProviderServer }
@@ -76,7 +81,7 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 				return nil, fmt.Errorf("review: decode args: %w", err)
 			}
 		}
-		exit, err := CliMain(in.Args), error(nil)
+		exit, err := run(in.Args)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +115,16 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 		pr = prFromEventPath(getenvAny("GITHUB_EVENT_PATH"))
 	}
 	if pr == 0 {
-		return nil, fmt.Errorf("pr verb: a PR number is required")
+		// The standalone/env fallback the removed verb had: a bed or a local run
+		// sets PR_NUMBER rather than an event payload.
+		if v := getenvAny("PR_NUMBER"); v != "" {
+			if n, e := parseInt(v); e == nil {
+				pr = n
+			}
+		}
+	}
+	if pr == 0 {
+		return nil, fmt.Errorf("pr verb: a PR number is required (input.pr, PR_NUMBER, or the event payload)")
 	}
 
 	ctx := context.Background()
@@ -125,7 +139,7 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	case "pr_commits":
 		out, err = gh.commits(ctx, repo, pr)
 	case "pr_thread":
-		out, err = gh.comments(ctx, repo, pr)
+		out, err = gh.thread(ctx, repo, pr)
 	case "pr_files":
 		out, err = gh.files(ctx, repo, pr)
 	default:

@@ -108,10 +108,15 @@ func jsonQuote(s string) string {
 	return string(b)
 }
 
-// chatTurn issues ONE model request for the conversation. It does NOT retry: a
-// terminal failure is classified by the caller. Re-issuing the identical request
-// is the measured amplifier of the long runs (an empty completion is a budget
-// decision, a deadline is a cap that already fired), so there is exactly one try.
+// chat is the ONE model call for a conversation. It is a package var so a test
+// can observe the EXACT tool set that reaches the client (proving the agent is
+// given its tools, not merely that a declaration exists). It does NOT retry: a
+// terminal failure is classified by the caller — re-issuing the identical request
+// is the measured amplifier of the long runs.
+var chat = llmkit.Chat
+
+// chatTurn issues one model request for the conversation, passing the read-only
+// tools so the agent can verify facts the primed context did not settle.
 func chatTurn(ctx context.Context, cfg Config, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
-	return llmkit.Chat(ctx, llm, llmkit.ToSDKMessages(messages), sdkTools())
+	return chat(ctx, llm, llmkit.ToSDKMessages(messages), sdkTools())
 }

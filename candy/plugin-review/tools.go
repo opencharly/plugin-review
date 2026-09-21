@@ -79,18 +79,11 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config
 		if err != nil {
 			return "", err
 		}
-		type row struct {
-			Path      string `json:"path"`
-			Status    string `json:"status"`
-			Additions int    `json:"additions"`
-			Deletions int    `json:"deletions"`
-			PatchSize int    `json:"patch_bytes"`
-		}
-		rows := make([]row, 0, len(files))
+		idx := make([]ChangedFile, 0, len(files))
 		for _, f := range files {
-			rows = append(rows, row{f.Path, f.Status, f.Additions, f.Deletions, len(f.Patch)})
+			idx = append(idx, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: ""})
 		}
-		return marshal(map[string]any{"files": rows, "file_count": len(rows)}, nil)
+		return marshal(map[string]any{"files": idx, "file_count": len(idx)}, nil)
 	case "get_pr_file":
 		var a struct {
 			Path string `json:"path"`
@@ -114,22 +107,7 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config
 	case "get_pr_commits":
 		return marshal(g.commits(ctx, repo, pr))
 	case "get_pr_thread":
-		comments, err := g.comments(ctx, repo, pr)
-		if err != nil {
-			return "", err
-		}
-		type row struct {
-			ID        int    `json:"id"`
-			Author    string `json:"author"`
-			CreatedAt string `json:"created_at"`
-			Bytes     int    `json:"bytes"`
-			Preview   string `json:"preview"`
-		}
-		rows := make([]row, 0, len(comments))
-		for _, c := range comments {
-			rows = append(rows, row{c.ID, c.Author, c.CreatedAt, len(c.Body), firstLine(c.Body, 200)})
-		}
-		return marshal(map[string]any{"comments": rows, "comment_count": len(rows)}, nil)
+		return marshal(g.thread(ctx, repo, pr))
 	case "get_pr_comment":
 		var a struct {
 			ID int `json:"id"`
@@ -140,7 +118,11 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config
 		if a.ID <= 0 {
 			return "", fmt.Errorf("get_pr_comment: a positive id is required (read get_pr_thread's index)")
 		}
-		for _, c := range mustComments(g, ctx, repo, pr) {
+		comments, err := g.comments(ctx, repo, pr)
+		if err != nil {
+			return "", err
+		}
+		for _, c := range comments {
 			if c.ID == a.ID {
 				return marshal(c, nil)
 			}
@@ -148,9 +130,4 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config
 		return "", fmt.Errorf("get_pr_comment: no comment %d in this PR", a.ID)
 	}
 	return "", fmt.Errorf("unknown tool %q", name)
-}
-
-func mustComments(g *ghClient, ctx context.Context, repo string, pr int) []Comment {
-	cs, _ := g.comments(ctx, repo, pr)
-	return cs
 }

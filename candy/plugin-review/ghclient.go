@@ -34,14 +34,15 @@ func (g *ghClient) client() (*ghkit.Client, error) {
 	return g.c, nil
 }
 
-// PRMeta is the PR identity + counts.
+// PRMeta is the PR identity + counts. The json tags are the verb:pr WIRE shape —
+// a consumer-visible contract, so they are explicit and tested.
 type PRMeta struct {
-	Title        string
-	State        string
-	HeadSHA      string
-	BaseSHA      string
-	ChangedLines int
-	ChangedFiles int
+	Title        string `json:"title"`
+	State        string `json:"state"`
+	HeadSHA      string `json:"head_sha"`
+	BaseSHA      string `json:"base_sha"`
+	ChangedLines int    `json:"changed_lines"`
+	ChangedFiles int    `json:"changed_files"`
 }
 
 func (g *ghClient) meta(ctx context.Context, repo string, pr int) (PRMeta, error) {
@@ -130,4 +131,32 @@ func (g *ghClient) postComment(ctx context.Context, repo string, pr int, body st
 		return err
 	}
 	return cli.PostComment(ctx, repo, pr, body)
+}
+
+// Thread is the comment INDEX the `pr_thread` verb and the engine's
+// get_pr_thread tool BOTH return — one shape (R3). It carries per-comment
+// metadata + a short preview, never the bodies: a body is read by id.
+type Thread struct {
+	HeadSHA      string    `json:"head_sha"`
+	BaseSHA      string    `json:"base_sha"`
+	Comments     []Comment `json:"comments"`
+	CommentCount int       `json:"comment_count"`
+}
+
+// thread builds the index (bodies replaced by previews) for a PR.
+func (g *ghClient) thread(ctx context.Context, repo string, pr int) (Thread, error) {
+	cs, err := g.comments(ctx, repo, pr)
+	if err != nil {
+		return Thread{}, err
+	}
+	idx := make([]Comment, 0, len(cs))
+	for _, c := range cs {
+		c.Body = firstLine(c.Body, 200)
+		idx = append(idx, c)
+	}
+	var meta PRMeta
+	if m, merr := g.meta(ctx, repo, pr); merr == nil {
+		meta = m
+	}
+	return Thread{HeadSHA: meta.HeadSHA, BaseSHA: meta.BaseSHA, Comments: idx, CommentCount: len(idx)}, nil
 }

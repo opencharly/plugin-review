@@ -79,6 +79,11 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 
 	for turn := 0; turn < cfg.MaxTurns; turn++ {
 		contextBytes := conversationBytes(messages)
+		// FAIL-CLOSED (pre-request): re-estimate on EVERY turn, so a tool result
+		// appended after the previous turn cannot exceed the window before we send.
+		if err := checkBudget(cfg, contextBytes); err != nil {
+			return "", err
+		}
 		start := time.Now()
 		msg, err := chatTurn(ctx, cfg, llm, messages)
 		elapsed := time.Since(start)
@@ -90,6 +95,15 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		content := ""
 		if msg.Content != nil {
 			content = *msg.Content
+		}
+		// FAIL-CLOSED (per-turn): if the provider reported the REAL prompt-token
+		// count for this request, enforce the window against it — exact, where the
+		// pre-loop estimate is approximate. This is what stops tool results
+		// appended during the loop from pushing a later request past the window.
+		if msg.Usage != nil && msg.Usage.PromptTokens > 0 {
+			if err := realBudgetCheck(cfg, msg.Usage.PromptTokens); err != nil {
+				return "", err
+			}
 		}
 		dbg(cfg, "turn %d done in %v — context_in=%d bytes content=%d reasoning=%d bytes finish_reason=%q usage=%s tool_calls=%d",
 			turn+1, elapsed, contextBytes, len(content), len(msg.Reasoning), msg.FinishReason, usageString(msg.Usage), len(msg.ToolCalls))
@@ -158,18 +172,33 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	return 0, nil
 }
 
-// checkBudget is the fail-closed context guard. It estimates the assembled
-// context in tokens (using the provider's own byte ratio when a response reported
-// one, else a conservative default) and fails if input + output reserve exceeds
-// the window.
+// checkBudget is the fail-closed context guard. It estimates a conversation's
+// size in tokens (a conservative hardcoded ratio — see below) and fails if
+// input + output reserve exceeds the window. It is called BOTH before the loop
+// (on the primed prompt+context) AND on every turn inside it, so tool results
+// appended during the loop cannot push the request past the window.
+//
+// The ratio is a deliberate constant, not the provider's reported count: the
+// guard must trip BEFORE a request is sent, when no usage is available yet. Once
+// a turn HAS reported usage, realBudgetCheck uses the provider's own count.
 func checkBudget(cfg Config, contextBytes int) error {
 	// Conservative tokens-per-byte for prose+code on this family (measured ~0.29
 	// tokens/byte; use 0.30 so the guard trips BEFORE the provider rejects).
 	const tokensPerByte = 0.30
-	inputTokens := int(float64(contextBytes) * tokensPerByte)
+	return budgetError(cfg, int(float64(contextBytes)*tokensPerByte))
+}
+
+// realBudgetCheck is the fail-closed guard using the provider's OWN prompt-token
+// count from a completed turn — exact, where checkBudget is an estimate. Called
+// after every turn that reported usage.
+func realBudgetCheck(cfg Config, promptTokens int) error {
+	return budgetError(cfg, promptTokens)
+}
+
+func budgetError(cfg Config, inputTokens int) error {
 	used := inputTokens + int(cfg.MaxTokens) + cfg.ContextMarginTokens
 	if used > cfg.ContextTokens {
-		return fmt.Errorf("inconclusive: PR too large to review in one context — the assembled input is ~%d tokens and the output reserve is %d, exceeding the %d-token window (margin %d). This is NOT a review verdict; split the PR into smaller PRs, or raise AI_REVIEW_CONTEXT_TOKENS if the model's window is larger",
+		return fmt.Errorf("inconclusive: PR too large to review in one context — the input is ~%d tokens and the output reserve is %d, exceeding the %d-token window (margin %d). This is NOT a review verdict; split the PR into smaller PRs, or raise AI_REVIEW_CONTEXT_TOKENS if the model's window is larger",
 			inputTokens, cfg.MaxTokens, cfg.ContextTokens, cfg.ContextMarginTokens)
 	}
 	return nil
