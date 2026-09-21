@@ -23,6 +23,10 @@ plugin-review:
         # API_KEY + GITHUB tokens are secrets. A test asserts this list covers
         # every env the engine reads, so a knob cannot silently fail to reach it.
         var:
+            # The measured remedy for the reasoning model's degenerate-repetition
+            # collapse (it emitted "Hmm." 38,472 times on an adversarial PR).
+            AI_REVIEW_FREQUENCY_PENALTY: "0.5"
+            AI_REVIEW_PRESENCE_PENALTY: "1.0"
             AI_REVIEW_PROVIDER: ollama-cloud
             AI_REVIEW_MODEL: deepseek-v4.1-flash
             AI_REVIEW_BASE_URL: https://ollama.com/v1

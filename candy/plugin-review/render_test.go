@@ -180,3 +180,27 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 		t.Errorf("invalid AI_REVIEW_CONTEXT_TOKENS must fall back to %d, got %d", DefaultContextTokens, c.ContextTokens)
 	}
 }
+
+// TestDegenerateRepetitionDefaults pins the measured remedy for the reasoning
+// model's repetition collapse (it emitted "Hmm." 38,472 times on an adversarial
+// PR and returned no answer). The engine must DEFAULT both penalties so the
+// collapse cannot silently recur, and honour explicit overrides.
+func TestDegenerateRepetitionDefaults(t *testing.T) {
+	c := FromEnv()
+	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != defaultFrequencyPenalty {
+		t.Errorf("frequency penalty default = %v, want %v", c.FrequencyPenalty, defaultFrequencyPenalty)
+	}
+	if c.PresencePenalty == nil || *c.PresencePenalty != defaultPresencePenalty {
+		t.Errorf("presence penalty default = %v, want %v", c.PresencePenalty, defaultPresencePenalty)
+	}
+	// An explicit override wins.
+	t.Setenv("AI_REVIEW_FREQUENCY_PENALTY", "0.9")
+	t.Setenv("AI_REVIEW_PRESENCE_PENALTY", "0.1")
+	c = FromEnv()
+	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != 0.9 {
+		t.Errorf("frequency penalty override not honoured: %v", c.FrequencyPenalty)
+	}
+	if c.PresencePenalty == nil || *c.PresencePenalty != 0.1 {
+		t.Errorf("presence penalty override not honoured: %v", c.PresencePenalty)
+	}
+}

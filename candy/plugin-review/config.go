@@ -115,6 +115,15 @@ const (
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
 	reviewTemperature            = 0.2
+	// defaultFrequencyPenalty / defaultPresencePenalty are the measured remedy for
+	// the reasoning model's DEGENERATE-REPETITION collapse: on an adversarial PR it
+	// emitted "Hmm." 38,472 times and returned no answer (finish_reason=length).
+	// A frequency penalty alone (0.5) fixed one such PR but not another; adding a
+	// presence penalty fixed that one (measured: #7 1m33s with fp=0.5+pp=1.0, vs an
+	// 8m14s collapse with fp alone). Set as DEFAULTS so the collapse cannot
+	// silently recur; AI_REVIEW_FREQUENCY_PENALTY / _PRESENCE_PENALTY override them.
+	defaultFrequencyPenalty = 0.5
+	defaultPresencePenalty  = 1.0
 )
 
 // FromEnv builds the Config from the process environment. It is THE constructor:
@@ -147,7 +156,15 @@ func FromEnv() Config {
 	c.TopP = envFloatPtr("AI_REVIEW_TOP_P")
 	c.Seed = envInt64Ptr("AI_REVIEW_SEED")
 	c.FrequencyPenalty = envFloatPtr("AI_REVIEW_FREQUENCY_PENALTY")
+	if c.FrequencyPenalty == nil {
+		def := defaultFrequencyPenalty
+		c.FrequencyPenalty = &def
+	}
 	c.PresencePenalty = envFloatPtr("AI_REVIEW_PRESENCE_PENALTY")
+	if c.PresencePenalty == nil {
+		def := defaultPresencePenalty
+		c.PresencePenalty = &def
+	}
 	c.Stop = envList("AI_REVIEW_STOP")
 
 	// identity: PR_NUMBER then the pull_request event payload; --repo/args are
