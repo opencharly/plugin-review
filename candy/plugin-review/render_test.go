@@ -186,7 +186,8 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 // degenerate-repetition collapse: temperature=1.0, top_p=0.95. At the old
 // near-greedy 0.2 the model repeated one token ("Hmm.") tens of thousands of
 // times and returned no answer; the official values yield a verdict (measured A/B
-// on the same PR). Explicit overrides must win; penalties default to unset.
+// on the same PR). Explicit overrides must win; the frequency/presence penalties
+// default to the secondary-guard values and are likewise overridable.
 func TestOfficialSamplingDefaults(t *testing.T) {
 	os.Unsetenv("AI_REVIEW_TEMPERATURE")
 	os.Unsetenv("AI_REVIEW_TOP_P")
