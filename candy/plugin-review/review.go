@@ -13,6 +13,10 @@ import (
 	"github.com/opencharly/sdk/llmkit"
 )
 
+// chat is the ONE model call. It is a package var so a test can drive generate()
+// deterministically without a network call (the chat seam).
+var chat = llmkit.Chat
+
 // review.go — the review engine. ONE path, from first principles:
 //
 //	assemble the COMPLETE PR context  →  ONE message  →  ONE model call
@@ -74,7 +78,7 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		len(prompt), len(user), len(c.Files), len(c.Comments))
 
 	start := time.Now()
-	msg, err := llmkit.Chat(ctx, llm, llmkit.ToSDKMessages(msgs), nil)
+	msg, err := chat(ctx, llm, llmkit.ToSDKMessages(msgs), nil)
 	elapsed := time.Since(start)
 	if err != nil {
 		dbg(cfg, "FAILED after %v: %v", elapsed, err)

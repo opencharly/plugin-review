@@ -19,14 +19,13 @@ import (
 //   - the SAME context delivered whole in ONE message, NO tools: 50 KB of
 //     reasoning, finish_reason=stop, verdict in 82.6s (and 8/8 planted defects
 //     found with exact line numbers in a separate anti-skim probe);
-//   - the SHIPPED design (prime + tools available): ONE turn, finish_reason=stop,
-//     verdict in 2m55s — the tools stay available for follow-up but the primed
-//     context means they are rarely needed.
+//   - the SHIPPED design (ONE message, ONE call): finish_reason=stop, verdict in
+//     2m55s on spec#140 and 1m24s on action-review#7.
 //
 // So the assembler reads EVERY changed file's full patch (never a sample, never
-// truncated) and emits ONE priming message; there is no per-file round-trip, no
-// fixture branch, and no plan executor. A review cannot skim what it was never
-// given, and it is given everything.
+// truncated) and emits ONE message; there is no per-file round-trip, no fixture
+// branch, and no plan executor. A review cannot skim what it was never given, and
+// it is given everything.
 //
 // Line-by-line guarantee: every changed file's complete unified diff is included,
 // in order, each under a FILE header carrying its status and ±counts. The prompt
