@@ -20,10 +20,8 @@
 #PrInput: {
 	// repo — owner/repo of the PR; default: the triggering repository.
 	repo?: string @go(Repo)
-	// pr — PR number (required unless an offline fixture is used).
+	// pr — PR number (required).
 	pr?: int @go(Pr)
 	// method — which read-only tool to run.
-	method: "pr_diff" | "pr_commits" | "pr_thread" | "pr_meta" @go(Method)
-	// fixture — name of a committed offline fixture (deterministic, no network).
-	fixture?: string @go(Fixture)
+	method: "pr_meta" | "pr_commits" | "pr_thread" | "pr_files" @go(Method)
 }

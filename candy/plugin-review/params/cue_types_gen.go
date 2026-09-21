@@ -7,12 +7,9 @@ type PrInput struct {
 	// repo — owner/repo of the PR; default: the triggering repository.
 	Repo string `json:"repo,omitempty"`
 
-	// pr — PR number (required unless an offline fixture is used).
+	// pr — PR number (required).
 	Pr int64 `json:"pr,omitempty"`
 
 	// method — which read-only tool to run.
 	Method string `json:"method"`
-
-	// fixture — name of a committed offline fixture (deterministic, no network).
-	Fixture string `json:"fixture,omitempty"`
 }
