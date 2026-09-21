@@ -121,9 +121,10 @@ const (
 )
 
 // FromEnv builds the Config from the process environment. It is THE constructor:
-// the command path, the tests and any embedder call it. Missing required
-// identity (PR/Repo) is a returned error, never a zero value that fetches PR 0.
-func FromEnv() (Config, error) {
+// the command path, the tests and any embedder call it. It cannot fail — a
+// missing or malformed value falls back to the documented default; the required
+// identity is checked by Validate() before any network call.
+func FromEnv() Config {
 	c := Config{
 		Provider:            envStr("AI_REVIEW_PROVIDER", DefaultProvider),
 		Model:               envStr("AI_REVIEW_MODEL", DefaultModel),
@@ -165,7 +166,7 @@ func FromEnv() (Config, error) {
 	}
 	c.Repo = c.RepoEnv
 	c.OutPath = envStr("AI_REVIEW_OUT", "")
-	return c, nil
+	return c
 }
 
 // Validate checks the required identity and bounds. A failure is returned BEFORE

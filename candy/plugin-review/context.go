@@ -41,12 +41,16 @@ type Context struct {
 
 // ChangedFile is one changed file with its FULL patch. The json tags are the
 // verb:pr WIRE shape (the review's render() uses the fields directly).
+// PatchBytes is the index-only patch size: the get_pr_files INDEX carries it
+// (with no Patch text) so the model can see the review's size up front; the
+// get_pr_file tool and pr_files verb carry the patch text and its length.
 type ChangedFile struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Patch     string `json:"patch"`
+	Path       string `json:"path"`
+	Status     string `json:"status"`
+	Additions  int    `json:"additions"`
+	Deletions  int    `json:"deletions"`
+	PatchBytes int    `json:"patch_bytes"`
+	Patch      string `json:"patch,omitempty"`
 }
 
 // Commit is one commit row (json tags = the verb:pr wire shape).

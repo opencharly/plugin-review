@@ -14,10 +14,7 @@ import (
 // `--self-test-verdict` are the only non-review modes (they exist so a bed can
 // assert the engine is present and the verdict matcher is exact).
 func parseCommand(args []string) (Config, string, error) {
-	cfg, err := FromEnv()
-	if err != nil {
-		return Config{}, "", err
-	}
+	cfg := FromEnv()
 	mode := "review"
 	for i := 0; i < len(args); i++ {
 		a := args[i]

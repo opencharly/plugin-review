@@ -60,7 +60,7 @@ func sdkTools() []openai.ChatCompletionToolUnionParam {
 // callTool dispatches one tool by name and returns its JSON result. A read
 // failure is returned as an error (surfaced to the model as the tool result),
 // never a silent empty.
-func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config, name, args string) (string, error) {
+func (g *ghClient) callTool(ctx context.Context, repo string, pr int, name, args string) (string, error) {
 	marshal := func(v any, err error) (string, error) {
 		if err != nil {
 			return "", err
@@ -80,10 +80,12 @@ func (g *ghClient) callTool(ctx context.Context, repo string, pr int, cfg Config
 			return "", err
 		}
 		idx := make([]ChangedFile, 0, len(files))
+		total := 0
 		for _, f := range files {
-			idx = append(idx, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: ""})
+			idx = append(idx, ChangedFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, PatchBytes: len(f.Patch)})
+			total += len(f.Patch)
 		}
-		return marshal(map[string]any{"files": idx, "file_count": len(idx)}, nil)
+		return marshal(map[string]any{"files": idx, "file_count": len(idx), "total_patch_bytes": total}, nil)
 	case "get_pr_file":
 		var a struct {
 			Path string `json:"path"`

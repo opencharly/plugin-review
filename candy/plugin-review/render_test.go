@@ -79,10 +79,7 @@ func TestFromEnvReadsEveryKnob(t *testing.T) {
 	t.Setenv("PR_NUMBER", "7")
 	t.Setenv("GITHUB_REPOSITORY", "o/r")
 
-	c, err := FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := FromEnv()
 	if c.Provider != "p" || c.Model != "m" || c.BaseURL != "http://x" {
 		t.Errorf("provider knobs not read: %+v", c)
 	}
@@ -223,10 +220,7 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 	t.Setenv("AI_REVIEW_MAX_TOKENS", "-5")
 	t.Setenv("AI_REVIEW_CONTEXT_TOKENS", "abc")
 	t.Setenv("PR_NUMBER", "0")
-	c, err := FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := FromEnv()
 	if c.MaxTurns != DefaultMaxTurns {
 		t.Errorf("invalid AI_REVIEW_MAX_TURNS must fall back to %d, got %d", DefaultMaxTurns, c.MaxTurns)
 	}

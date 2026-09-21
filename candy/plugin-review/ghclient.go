@@ -133,26 +133,36 @@ func (g *ghClient) postComment(ctx context.Context, repo string, pr int, body st
 	return cli.PostComment(ctx, repo, pr, body)
 }
 
-// Thread is the comment INDEX the `pr_thread` verb and the engine's
-// get_pr_thread tool BOTH return — one shape (R3). It carries per-comment
-// metadata + a short preview, never the bodies: a body is read by id.
-type Thread struct {
-	HeadSHA      string    `json:"head_sha"`
-	BaseSHA      string    `json:"base_sha"`
-	Comments     []Comment `json:"comments"`
-	CommentCount int       `json:"comment_count"`
+// CommentIndex is one INDEX row: metadata + a short preview, NEVER the body. A
+// body is fetched by id (get_pr_comment / pr_comment). This is the contract the
+// removed thread_index_test pinned and the tool description promises.
+type CommentIndex struct {
+	ID        int    `json:"id"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Bytes     int    `json:"bytes"`
+	Preview   string `json:"preview"`
 }
 
-// thread builds the index (bodies replaced by previews) for a PR.
+// Thread is the comment INDEX the `pr_thread` verb and the engine's
+// get_pr_thread tool BOTH return — one shape (R3). It carries per-comment
+// metadata + a short preview, never the bodies.
+type Thread struct {
+	HeadSHA      string         `json:"head_sha"`
+	BaseSHA      string         `json:"base_sha"`
+	Comments     []CommentIndex `json:"comments"`
+	CommentCount int            `json:"comment_count"`
+}
+
+// thread builds the index (bodies replaced by a size + short preview) for a PR.
 func (g *ghClient) thread(ctx context.Context, repo string, pr int) (Thread, error) {
 	cs, err := g.comments(ctx, repo, pr)
 	if err != nil {
 		return Thread{}, err
 	}
-	idx := make([]Comment, 0, len(cs))
+	idx := make([]CommentIndex, 0, len(cs))
 	for _, c := range cs {
-		c.Body = firstLine(c.Body, 200)
-		idx = append(idx, c)
+		idx = append(idx, CommentIndex{ID: c.ID, Author: c.Author, CreatedAt: c.CreatedAt, Bytes: len(c.Body), Preview: firstLine(c.Body, 200)})
 	}
 	var meta PRMeta
 	if m, merr := g.meta(ctx, repo, pr); merr == nil {

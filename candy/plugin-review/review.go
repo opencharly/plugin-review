@@ -117,7 +117,7 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 			return content, nil
 		}
 		for _, tc := range msg.ToolCalls {
-			out, terr := gh.callTool(ctx, cfg.Repo, cfg.PR, cfg, tc.Name, tc.Arguments)
+			out, terr := gh.callTool(ctx, cfg.Repo, cfg.PR, tc.Name, tc.Arguments)
 			if terr != nil {
 				out = "{\"error\": " + jsonQuote(terr.Error()) + "}"
 			}
