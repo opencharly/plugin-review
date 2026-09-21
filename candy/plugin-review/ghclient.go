@@ -12,8 +12,8 @@ import (
 // (GH_TOKEN/GITHUB_TOKEN then the gh CLI hosts.yml), the API base, auth headers,
 // the read bound and non-2xx status+body surfacing. This file holds ONLY the
 // review's typed reads — one method per fact the assembler needs. There is no
-// tool-dispatch table, no fixture branch, and no per-file index/indirection: the
-// assembler reads everything in one pass.
+// fixture branch, and no per-file index/indirection: the assembler reads
+// everything in one pass.
 type ghClient struct {
 	c   *ghkit.Client
 	err error

@@ -17,7 +17,8 @@ import (
 //
 //	assemble the COMPLETE PR context  →  ONE LLM call  →  extract the verdict  →  emit effects.
 //
-// There is no tool loop, no plan executor, no fixture branch and no pass retry.
+// There is no plan executor, no fixture branch, and no pass retry; the tool loop
+// is bounded (see generate) and exists only as a verification surface.
 // Each of those was accidental complexity that produced the runaway thinking
 // (fragmented context + discarded reasoning) or the confusing "what is actually
 // running" problem (a --plan path that wrapped a single review step; env read in
