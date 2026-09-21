@@ -76,7 +76,6 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		{Role: "user", Content: llmkit.Strptr(user)},
 	}
 	loopStart := time.Now()
-	effortReduced := false
 	dbg(cfg, "loop start — turns_max=%d reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v primed=%v context_bytes=(system=%d user=%d) files=%d comments=%d",
 		cfg.MaxTurns, cfg.ReasoningEffort, cfg.MaxTokens, cfg.AttemptTimeout, cfg.StreamIdleTimeout, true,
 		len(prompt), len(user), len(c.Files), len(c.Comments))
@@ -91,25 +90,6 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		start := time.Now()
 		msg, err := chatTurn(ctx, llm, messages)
 		elapsed := time.Since(start)
-		if err != nil {
-			// BOUNDED-REASONING FALLBACK (measured root fix). reasoning + answer
-			// share max_tokens; on a large context the model can reason until the
-			// budget is exhausted (finish_reason=length, no answer). Raising the
-			// budget makes it WORSE (measured: 384000 -> 28 min incomplete). The
-			// reliable lever is LOWERING the effort, so retry this turn ONCE at a
-			// reduced effort — a deterministic fallback, not a blind re-issue.
-			var ece *llmkit.EmptyCompletionError
-			if errors.As(err, &ece) && !effortReduced && cfg.ReasoningEffort != "" {
-				effortReduced = true
-				lower := lowerEffort(cfg.ReasoningEffort)
-				cfg.ReasoningEffort = lower
-				llm = llmkitConfig(cfg)
-				dbg(cfg, "turn %d hit the shared budget (finish_reason=%q) — retrying ONCE at reasoning_effort=%q", turn+1, ece.FinishReason, lower)
-				start = time.Now()
-				msg, err = chatTurn(ctx, llm, messages)
-				elapsed = time.Since(start)
-			}
-		}
 		if err != nil {
 			dbg(cfg, "turn %d FAILED after %v (context=%d bytes): %v", turn+1, elapsed, contextBytes, err)
 			debugFailedReasoning(cfg, err)
@@ -218,23 +198,6 @@ func verdictExit(body string) (int, error) {
 		return 2, fmt.Errorf("inconclusive: ambiguous verdict — multiple distinct Verdict lines: %v", distinct)
 	}
 	return 0, nil
-}
-
-// lowerEffort steps a reasoning effort DOWN one level, so the bounded-reasoning
-// fallback has somewhere to go. It is the reliable lever measured against the
-// shared-budget failure (raising max_tokens made it worse; lowering the effort
-// let the answer through).
-func lowerEffort(e string) string {
-	switch e {
-	case "max":
-		return "high"
-	case "high":
-		return "medium"
-	case "medium":
-		return "low"
-	default:
-		return "none"
-	}
 }
 
 // checkBudget is the fail-closed context guard. It estimates a conversation's
