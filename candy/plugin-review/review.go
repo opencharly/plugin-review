@@ -32,8 +32,10 @@ import (
 //   - The context guard fails HARD if the assembled input + output reserve cannot
 //     fit the window, so a review never silently truncates.
 //   - A generation failure is classified (deterministic / whole-request cap /
-//     idle stall) and NEVER retried: re-issuing the same request is the measured
-//     amplifier of long runs.
+//     idle stall). The ONE bounded fallback: an empty completion caused by the
+//     shared reasoning+answer budget is retried ONCE one effort level down (the
+//     measured reliable lever — raising max_tokens made it worse). A whole-request
+//     cap or idle stall is NEVER re-issued (re-issuing re-runs the doomed request).
 
 // Review is the pure engine: it assembles the context, runs the primed review,
 // and returns the review text. It has NO side effects (no comment, no file write)

@@ -57,10 +57,13 @@ surface a future charly env-injection capability will honour. That capability is
 | `AI_REVIEW_SESSION_ID` | minted | session-affinity header (empty disables) |
 | `AI_REVIEW_OUT` | — | write the review body to a file |
 
-No retry: a terminal failure (empty completion, whole-request cap, idle stall) is
-classified and reported, never re-issued — re-issuing the same request is the measured
-amplifier of the long runs. The prompt is EMBEDDED (`prompt.md`): there is no runtime
-prompt path for a PR to redirect.
+A terminal failure (whole-request cap, idle stall) is classified and reported, never
+re-issued — re-issuing the same request is the measured amplifier of the long runs. The
+ONE bounded fallback: an empty completion caused by the shared reasoning+answer budget
+(`finish_reason=length`) is retried ONCE one effort level down (max→high→medium→low→none),
+because reasoning at a high effort can starve the answer on a large context, and lowering
+the effort is the measured reliable lever (raising `AI_REVIEW_MAX_TOKENS` made it worse).
+The prompt is EMBEDDED (`prompt.md`): no runtime prompt path for a PR to redirect.
 
 ## Distribution
 
