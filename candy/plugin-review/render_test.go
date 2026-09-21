@@ -65,6 +65,7 @@ func TestFromEnvReadsEveryKnob(t *testing.T) {
 	t.Setenv("AI_REVIEW_ATTEMPT_TIMEOUT", "120")
 	t.Setenv("AI_REVIEW_CONTEXT_TOKENS", "999")
 	t.Setenv("AI_REVIEW_CONTEXT_MARGIN", "11")
+	t.Setenv("AI_REVIEW_MAX_TURNS", "33")
 	t.Setenv("AI_REVIEW_POST_COMMENT", "false")
 	t.Setenv("AI_REVIEW_DEBUG", "1")
 	t.Setenv("AI_REVIEW_OUT", "/tmp/o")
@@ -95,6 +96,9 @@ func TestFromEnvReadsEveryKnob(t *testing.T) {
 	}
 	if c.ContextTokens != 999 || c.ContextMarginTokens != 11 {
 		t.Errorf("context knobs not read")
+	}
+	if c.MaxTurns != 33 {
+		t.Errorf("max turns not read: %d", c.MaxTurns)
 	}
 	if c.PostComment || !c.Debug || c.OutPath != "/tmp/o" {
 		t.Errorf("effect/debug knobs not read: post=%v debug=%v out=%q", c.PostComment, c.Debug, c.OutPath)
@@ -128,4 +132,40 @@ func TestBudgetGuardFailsClosed(t *testing.T) {
 	if err := checkBudget(cfg, 1_000_000); err == nil {
 		t.Error("an over-cap context must fail hard (never truncated)")
 	}
+}
+
+// TestAgentHasTools is the regression for the regression: the review agent MUST
+// receive the read-only tools. The cleanup once passed nil tools while the prompt
+// still instructed the model to call them — a functional break the validator
+// caught. sdkTools() is the single declaration; this asserts it is non-empty,
+// covers every tool the prompt may name, and is actually threaded into chatTurn.
+func TestAgentHasTools(t *testing.T) {
+	tools := sdkTools()
+	if len(tools) == 0 {
+		t.Fatal("the review agent must receive tools (sdkTools() is empty)")
+	}
+	byName := map[string]bool{}
+	for _, d := range reviewTools {
+		byName[d.name] = true
+	}
+	for _, want := range []string{
+		"get_pr_meta", "get_pr_body", "get_pr_files", "get_pr_file",
+		"get_pr_commits", "get_pr_thread", "get_pr_comment",
+	} {
+		if !byName[want] {
+			t.Errorf("the agent is missing the %q tool", want)
+		}
+	}
+	// The prompt must NOT instruct the agent to use a tool that does not exist.
+	prompt := Config{Prompt: readEmbedded(t)}.EffectivePrompt()
+	for _, line := range []string{"get_pr_diff"} {
+		if strings.Contains(prompt, line) && !byName[line] {
+			t.Errorf("prompt references %q but that tool is not provided", line)
+		}
+	}
+}
+
+func readEmbedded(t *testing.T) string {
+	t.Helper()
+	return embeddedPrompt
 }

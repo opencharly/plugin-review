@@ -66,6 +66,9 @@ type Config struct {
 	// AttemptTimeout is the whole-request cap (AI_REVIEW_ATTEMPT_TIMEOUT
 	// seconds). 0 = no cap beyond the idle bound.
 	AttemptTimeout time.Duration
+	// MaxTurns bounds the tool-calling turns (AI_REVIEW_MAX_TURNS). The review is
+	// PRIMED with the full context, so it needs few turns; the cap is a backstop.
+	MaxTurns int
 
 	// ── context guard (fail-closed) ─────────────────────────────────────────
 	// ContextTokens is the model's window (AI_REVIEW_CONTEXT_TOKENS). The
@@ -111,6 +114,7 @@ const (
 	DefaultMaxTokens       int64 = 262144
 	DefaultStreamIdle            = 3 * time.Minute
 	DefaultAttemptTimeout        = 15 * time.Minute
+	DefaultMaxTurns              = 40
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
 	reviewTemperature            = 0.2
@@ -129,6 +133,7 @@ func FromEnv() (Config, error) {
 		MaxTokens:           envInt64("AI_REVIEW_MAX_TOKENS", DefaultMaxTokens),
 		StreamIdleTimeout:   envSeconds("AI_REVIEW_STREAM_IDLE_TIMEOUT", DefaultStreamIdle),
 		AttemptTimeout:      envSeconds("AI_REVIEW_ATTEMPT_TIMEOUT", DefaultAttemptTimeout),
+		MaxTurns:            envInt("AI_REVIEW_MAX_TURNS", DefaultMaxTurns),
 		ContextTokens:       envInt("AI_REVIEW_CONTEXT_TOKENS", DefaultContextTokens),
 		ContextMarginTokens: envInt("AI_REVIEW_CONTEXT_MARGIN", DefaultContextMargin),
 		Prompt:              embeddedPrompt,

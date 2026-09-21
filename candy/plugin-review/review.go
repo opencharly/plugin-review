@@ -47,50 +47,78 @@ func Review(ctx context.Context, cfg Config) (string, error) {
 	return generate(ctx, cfg, c)
 }
 
-// generate makes the ONE model call for the assembled context. It owns the size
-// guard, the single turn, and the failure classification.
+// generate runs the review: it PRIMES the conversation with the complete PR
+// context (ONE message), then runs a bounded tool loop in which the read-only
+// tools remain available for verification/follow-up.
+//
+// Why prime AND tools (RCA): the old engine assembled the context turn by turn
+// through the tools, and message reasoning is NOT re-sent between turns, so the
+// synthesis turn re-derived everything from partial tool results — measured at
+// 371 KB of reasoning over three runaway synthesis turns (8m25s) on a 25-file
+// PR. Delivering the whole context in ONE priming message collapsed that to
+// 50 KB with a verdict (82.6s). Keeping the tools means the agent can still
+// verify a count or re-read a fact; because it already HAS the full context it
+// has no need to reconstruct it, so the loop converges fast.
 func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 	prompt := cfg.EffectivePrompt()
 	user := c.Assembled
 
-	// FAIL-CLOSED size guard: the assembled input + the output reserve must fit
-	// the window. A review is never silently truncated, so an over-cap PR is a
-	// hard, actionable class ("split the PR"), never a partial read.
 	if err := checkBudget(cfg, len(prompt)+len(user)); err != nil {
 		return "", err
 	}
-
 	llm := llmkitConfig(cfg)
-	msgs := []llmkit.Message{
+	gh := newGHClient()
+	messages := []llmkit.Message{
 		{Role: "system", Content: llmkit.Strptr(prompt)},
 		{Role: "user", Content: llmkit.Strptr(user)},
 	}
-	if cfg.Debug {
-		dbg(cfg, "request: provider=%s model=%s base_url=%s reasoning_effort=%q max_tokens=%d temperature=%v context_bytes=(system=%d user=%d) files=%d comments=%d",
-			cfg.Provider, cfg.Model, cfg.BaseURL, cfg.ReasoningEffort, cfg.MaxTokens, temperatureOrDefault(cfg.Temperature),
-			len(prompt), len(user), len(c.Files), len(c.Comments))
-	}
+	loopStart := time.Now()
+	dbg(cfg, "loop start — turns_max=%d reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v primed=%v context_bytes=(system=%d user=%d) files=%d comments=%d",
+		cfg.MaxTurns, cfg.ReasoningEffort, cfg.MaxTokens, cfg.AttemptTimeout, cfg.StreamIdleTimeout, true,
+		len(prompt), len(user), len(c.Files), len(c.Comments))
 
-	start := time.Now()
-	msg, err := llmkit.Chat(ctx, llm, llmkit.ToSDKMessages(msgs), nil)
-	elapsed := time.Since(start)
-	if err != nil {
-		dbg(cfg, "request FAILED after %v: %v", elapsed, err)
-		debugFailedReasoning(cfg, err)
-		return "", classify(err, cfg)
-	}
-	content := ""
-	if msg.Content != nil {
-		content = *msg.Content
-	}
-	if cfg.Debug {
-		dbg(cfg, "response in %v: finish_reason=%q content=%d bytes reasoning=%d bytes usage=%s",
-			elapsed, msg.FinishReason, len(content), len(msg.Reasoning), usageString(msg.Usage))
+	for turn := 0; turn < cfg.MaxTurns; turn++ {
+		contextBytes := conversationBytes(messages)
+		start := time.Now()
+		msg, err := chatTurn(ctx, cfg, llm, messages)
+		elapsed := time.Since(start)
+		if err != nil {
+			dbg(cfg, "turn %d FAILED after %v (context=%d bytes): %v", turn+1, elapsed, contextBytes, err)
+			debugFailedReasoning(cfg, err)
+			return "", classify(err, cfg)
+		}
+		content := ""
+		if msg.Content != nil {
+			content = *msg.Content
+		}
+		dbg(cfg, "turn %d done in %v — context_in=%d bytes content=%d reasoning=%d bytes finish_reason=%q usage=%s tool_calls=%d",
+			turn+1, elapsed, contextBytes, len(content), len(msg.Reasoning), msg.FinishReason, usageString(msg.Usage), len(msg.ToolCalls))
 		if msg.Reasoning != "" {
-			dbg(cfg, "REASONING\n%s\n[plugin-review debug: end reasoning %d bytes]", msg.Reasoning, len(msg.Reasoning))
+			dbg(cfg, "turn %d REASONING\n%s\n[plugin-review debug: end reasoning %d bytes]", turn+1, msg.Reasoning, len(msg.Reasoning))
+		}
+		messages = append(messages, msg)
+
+		if len(msg.ToolCalls) == 0 {
+			dbg(cfg, "loop end — %d turn(s) in %v", turn+1, time.Since(loopStart))
+			return content, nil
+		}
+		for _, tc := range msg.ToolCalls {
+			out, terr := gh.callTool(ctx, cfg.Repo, cfg.PR, cfg, tc.Name, tc.Arguments)
+			if terr != nil {
+				out = "{\"error\": " + jsonQuote(terr.Error()) + "}"
+			}
+			dbg(cfg, "  tool %q args=%d bytes -> result=%d bytes", tc.Name, len(tc.Arguments), len(out))
+			messages = append(messages, llmkit.Message{Role: "tool", ToolCallID: tc.ID, Content: llmkit.Strptr(out)})
 		}
 	}
-	return content, nil
+	// Turn budget exhausted: return the last assistant content, if any.
+	dbg(cfg, "loop end — turn budget exhausted after %v (MaxTurns=%d)", time.Since(loopStart), cfg.MaxTurns)
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" && messages[i].Content != nil {
+			return *messages[i].Content, nil
+		}
+	}
+	return "Conversation exceeded the turn budget without a verdict.", nil
 }
 
 // Emit is the ONE place a review result reaches the outside world: the --out file,

@@ -34,6 +34,7 @@ plugin-review:
             AI_REVIEW_ATTEMPT_TIMEOUT: "900"
             AI_REVIEW_CONTEXT_TOKENS: "1048576"
             AI_REVIEW_CONTEXT_MARGIN: "16384"
+            AI_REVIEW_MAX_TURNS: "40"
             AI_REVIEW_POST_COMMENT: "true"
             AI_REVIEW_DEBUG: "0"
         env_accept:
@@ -71,6 +72,8 @@ plugin-review:
               description: "Model context window (the fail-closed size guard)."
             - name: AI_REVIEW_CONTEXT_MARGIN
               description: "Headroom kept below the window."
+            - name: AI_REVIEW_MAX_TURNS
+              description: "Max tool-calling turns (the review is primed, so few are needed)."
             - name: AI_REVIEW_PROMPT_EXTRA
               description: "Operator text appended to the embedded rulebook."
             - name: AI_REVIEW_POST_COMMENT
