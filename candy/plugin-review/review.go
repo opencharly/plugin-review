@@ -73,8 +73,9 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		{Role: "system", Content: llmkit.Strptr(prompt)},
 		{Role: "user", Content: llmkit.Strptr(user)},
 	}
-	dbg(cfg, "request — reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v context_bytes=(system=%d user=%d) files=%d comments=%d",
+	dbg(cfg, "request — reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v sampling=(temperature=%v top_p=%v frequency_penalty=%v presence_penalty=%v) context_bytes=(system=%d user=%d) files=%d comments=%d",
 		cfg.ReasoningEffort, cfg.MaxTokens, cfg.AttemptTimeout, cfg.StreamIdleTimeout,
+		f64(temperatureOrDefault(cfg.Temperature)), f64(cfg.TopP), f64(cfg.FrequencyPenalty), f64(cfg.PresencePenalty),
 		len(prompt), len(user), len(c.Files), len(c.Comments))
 
 	start := time.Now()
@@ -238,6 +239,15 @@ func dbg(cfg Config, format string, a ...any) {
 	if cfg.Debug {
 		fmt.Printf("plugin-review[debug]: "+format+"\n", a...)
 	}
+}
+
+// f64 dereferences an optional float for the debug trace; a nil pointer prints as
+// "nil" so an unset knob is distinguishable from an explicit zero.
+func f64(p *float64) any {
+	if p == nil {
+		return "nil"
+	}
+	return *p
 }
 
 func isWholeRequestDeadline(err error) bool {
