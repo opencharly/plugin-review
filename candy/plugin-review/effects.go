@@ -117,6 +117,6 @@ var chat = llmkit.Chat
 
 // chatTurn issues one model request for the conversation, passing the read-only
 // tools so the agent can verify facts the primed context did not settle.
-func chatTurn(ctx context.Context, cfg Config, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
+func chatTurn(ctx context.Context, llm llmkit.Config, messages []llmkit.Message) (llmkit.Message, error) {
 	return chat(ctx, llm, llmkit.ToSDKMessages(messages), sdkTools())
 }

@@ -85,7 +85,7 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 			return "", err
 		}
 		start := time.Now()
-		msg, err := chatTurn(ctx, cfg, llm, messages)
+		msg, err := chatTurn(ctx, llm, messages)
 		elapsed := time.Since(start)
 		if err != nil {
 			dbg(cfg, "turn %d FAILED after %v (context=%d bytes): %v", turn+1, elapsed, contextBytes, err)

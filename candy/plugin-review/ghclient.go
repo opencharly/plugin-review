@@ -87,7 +87,8 @@ func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFil
 	out := make([]ChangedFile, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, ChangedFile{
-			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions,
+			PatchBytes: len(f.Patch), Patch: f.Patch,
 		})
 	}
 	return out, nil

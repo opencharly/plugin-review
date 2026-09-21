@@ -154,7 +154,7 @@ func TestAgentHasTools(t *testing.T) {
 
 	cfg := Config{Repo: "o/r", PR: 1, MaxTokens: 10, ContextTokens: 1 << 20}
 	_ = cfg
-	if _, err := chatTurn(context.Background(), Config{}, llmkit.Config{}, nil); err == nil {
+	if _, err := chatTurn(context.Background(), llmkit.Config{}, nil); err == nil {
 		t.Fatal("expected the capture sentinel error")
 	}
 	if len(got) == 0 {

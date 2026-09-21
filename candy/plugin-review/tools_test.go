@@ -115,4 +115,9 @@ func TestFilesIndexCarriesPatchSize(t *testing.T) {
 	if !strings.Contains(out, `"patch_bytes"`) || !strings.Contains(out, `"total_patch_bytes"`) {
 		t.Fatalf("the files index must carry patch_bytes/total_patch_bytes: %s", out)
 	}
+	// The stub serves a 1-byte patch, so patch_bytes must be NON-ZERO — a key
+	// present with 0 (the bug this caught) would pass a contains-only check.
+	if strings.Contains(out, `"patch_bytes":0`) || strings.Contains(out, `"total_patch_bytes":0`) {
+		t.Fatalf("patch_bytes must reflect the real patch length, not zero: %s", out)
+	}
 }

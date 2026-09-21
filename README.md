@@ -30,9 +30,14 @@ fact or re-fetch something; because it already has the full context it rarely ne
 ## Configuration (env only, declared in `charly.yml`)
 
 Every model-behaviour knob is an `AI_REVIEW_*` env var, set as a GitHub Actions org/repo
-variable; each is declared in `charly.yml` `env_accept` and consumed in `config.go`
-(`FromEnv`). `TestConfigSurfaceMatchesCharlyYML` asserts the two lists match, so a knob
-cannot silently fail to reach the plugin.
+variable and consumed in `config.go` (`FromEnv`). Each is declared in `charly.yml`
+(`env_accept`, with default `var:` values) as the documented surface and single source of
+truth; `TestConfigSurfaceMatchesCharlyYML` asserts that declaration list EQUALS the env the
+engine reads, so a knob cannot silently drift. (Note: for an out-of-process command plugin
+charly currently passes the ambient environment, not the candy `var:` block — so the actual
+values come from the runner's env/vars; the `var:` block documents defaults and is the
+surface a future charly env-injection capability will honour. That capability is the
+**charly env-injection cutover**.)
 
 | Knob | Default | Purpose |
 |---|---|---|
