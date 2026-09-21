@@ -5,9 +5,8 @@ go 1.26.4
 require (
 	github.com/openai/openai-go/v3 v3.61.0
 	github.com/opencharly/plugin-gh v0.2026263.1602
-	github.com/opencharly/sdk v0.2026263.1023
+	github.com/opencharly/sdk v0.2026264.731
 	github.com/opencharly/spec v0.2026262.957
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -38,4 +37,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20231106174013-bbf56f31fb17 // indirect
 	google.golang.org/grpc v1.61.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

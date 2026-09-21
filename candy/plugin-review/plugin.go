@@ -1,61 +1,68 @@
-// Package pluginreview — the importable form of the charly REVIEW plugin: the
-// read-only verb:pr check tools + the command:review engine (a 1:1 port of the
-// retired opencharly/pi-review-action index.js) + the --plan runtime orchestration
-// executor. Usable in BOTH placements with zero authoring change: COMPILED INTO
+// Package pluginreview — the charly REVIEW plugin: the read-only `pr` check
+// verbs (the PR facts a bed can probe) and `command:review`, the gate's review
+// engine. Usable in BOTH placements with zero authoring change: COMPILED INTO
 // charly in-process (registerCompiledPlugin → Invoke) OR served OUT-OF-PROCESS by
-// the cmd/serve shim (sdk.Main dual-mode; command dispatch = fork/exec CLI mode →
-// CliMain, verb dispatch = go-plugin gRPC Invoke).
+// the cmd/serve shim (sdk.Main dual mode).
 package pluginreview
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"os"
 
-	"github.com/opencharly/plugin-review/candy/plugin-review/params"
 	"github.com/opencharly/sdk"
 	pb "github.com/opencharly/spec/proto"
 )
 
-//go:embed schema/*.cue
-var schemaFS embed.FS
+const calver = "2026.263.2100"
 
-const calver = "2026.262.1709"
-
-// NewProvider returns the provider for in-proc registration or out-of-proc serving.
 func NewProvider() pb.ProviderServer { return &provider{} }
 
-// NewMeta advertises command:review (no InputDef — pass-through CLI tokens) and
-// verb:pr (typed plugin_input #PrInput, validated over the served schema).
 func NewMeta() pb.PluginMetaServer {
+	// Input-less: command:review's args are pass-through CLI tokens, so there is
+	// no typed plugin_input and NO CUE schema — the SDK's documented "input-less
+	// plugin passes a nil schemaFS" path.
 	return sdk.NewMeta(calver,
 		[]sdk.ProvidedCapability{
 			{Class: "command", Word: "review"},
-			{Class: "verb", Word: "pr", InputDef: "#PrInput"},
 		},
-		schemaFS)
+		nil)
 }
 
 // CliMain is the OUT-OF-PROCESS CLI-mode entry (sdk.Main dual mode): fork/exec'd
 // by charly with the pass-through tokens after `charly review <args>`.
-func CliMain(args []string) int {
-	exit, err := RunReviewFromArgs(args)
+// run is the ONE command core: parse the args, dispatch the mode, and return the
+// exit code AND the error (never stderr-only). Both the out-of-process CLI entry
+// (CliMain) and the in-proc Invoke path use it, so they cannot diverge.
+func run(args []string) (int, error) {
+	cfg, mode, err := parseCommand(args)
 	if err != nil {
-		fmt.Fprintln(osStderr, "review: "+err.Error())
-		if exit == 0 {
-			exit = 1
-		}
-		return exit
+		return 2, err
+	}
+	switch mode {
+	case "self-test":
+		fmt.Println("plugin-review self-test: ok (command:review resolves)")
+		return 0, nil
+	case "self-test-verdict":
+		return runVerdictSelfTest()
+	default:
+		return Run(context.Background(), cfg)
+	}
+}
+
+// CliMain is the OUT-OF-PROCESS CLI entry (fork/exec'd by charly). It reports the
+// error on stderr and returns the exit code — the only place stderr is used.
+func CliMain(args []string) int {
+	exit, err := run(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "review: "+err.Error())
 	}
 	return exit
 }
 
 type provider struct{ pb.UnimplementedProviderServer }
 
-// Invoke dispatches: OpRun → command:review (in-proc compiled-in path); any other
-// op (verb dispatch from a check step / bed) → verb:pr with the typed plugin_input.
 func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeReply, error) {
 	if req.GetOp() == sdk.OpRun {
 		var in struct {
@@ -66,7 +73,7 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 				return nil, fmt.Errorf("review: decode args: %w", err)
 			}
 		}
-		exit, err := RunReviewFromArgs(in.Args)
+		exit, err := run(in.Args)
 		if err != nil {
 			return nil, err
 		}
@@ -76,63 +83,32 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 		return &pb.InvokeReply{}, nil
 	}
 
-	// verb:pr dispatch — decode the authored plugin_input into the CUE-GENERATED
-	// typed struct (never a hand-parsed map).
-	var in struct {
-		PluginInput params.PrInput `json:"plugin_input"`
-	}
-	if len(req.GetParamsJson()) > 0 {
-		if err := json.Unmarshal(req.GetParamsJson(), &in); err != nil {
-			return nil, fmt.Errorf("pr verb: decode plugin_input: %w", err)
-		}
-	}
-	input := in.PluginInput
-	repo := input.Repo
-	if repo == "" {
-		repo = getenvAny("GITHUB_REPOSITORY")
-	}
-	pr := input.Pr
-	if pr == 0 {
-		if v := getenvAny("PR_NUMBER"); v != "" {
-			n, _ := parseInt(v)
-			pr = int64(n)
-		}
-	}
-
-	tools := toolSet{gh: newGHClient(), repo: repo, pr: int(pr), fixture: input.Fixture}
-	if o, r := splitRepo(repo); o != "" {
-		tools.owner, tools.repo = o, r
-	}
-	method := ""
-	switch input.Method {
-	case "pr_diff":
-		method = "get_pr_diff"
-	case "pr_commits":
-		method = "get_pr_commits"
-	case "pr_thread":
-		method = "get_pr_thread"
-	case "pr_meta":
-		method = "get_pr_meta"
-	default:
-		return nil, fmt.Errorf("pr verb: unknown method %q", input.Method)
-	}
-	// verb:pr exposes only the four zero-arg reads (pr_diff/pr_commits/pr_thread/
-	// pr_meta) — get_pr_comment is an engine-internal tool with a required id, not
-	// an authored verb method. An empty args string is correct for them.
-	result, err := tools.call(context.Background(), method, "")
-	if err != nil {
-		return nil, err
-	}
-	return &pb.InvokeReply{ResultJson: []byte(result)}, nil
+	return nil, fmt.Errorf("review: unknown op %v", req.GetOp())
 }
 
-// splitRepo splits "owner/repo" into its parts. A repo with no slash yields
-// ("", "") — matching the pre-cutover contract, since a bare name has no owner
-// and the callers treat an empty owner as "not owner-qualified".
-func splitRepo(repo string) (owner, name string) {
-	if !strings.Contains(repo, "/") {
-		return "", ""
+func runVerdictSelfTest() (int, error) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"## Review — PASS\n\nVerdict: PASS\n", true},
+		{"Verdict: BLOCK\n", true},
+		{"Verdict:  PASS  \n", true},
+		{"no verdict here\n", false},
+		{"Verdict: PASS\nVerdict: BLOCK\n", false},
 	}
-	owner, name, _ = strings.Cut(repo, "/")
-	return owner, name
+	fail := 0
+	for _, c := range cases {
+		_, distinct, n := extractVerdict(c.in)
+		got := n == 1 && len(distinct) == 1
+		if got != c.want {
+			fmt.Printf("verdict self-test FAIL: want ok=%v got ok=%v for %q\n", c.want, got, c.in)
+			fail++
+		}
+	}
+	if fail > 0 {
+		return 1, fmt.Errorf("verdict self-test: %d case(s) failed", fail)
+	}
+	fmt.Println("verdict self-test: ok (all " + fmt.Sprint(len(cases)) + " cases)")
+	return 0, nil
 }

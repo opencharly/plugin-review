@@ -1,39 +1,122 @@
 plugin-review:
     candy:
-        version: 2026.262.1709
+        version: 2026.263.2100
         description: |-
-            Read-only GitHub PR review for OpenCharly's gate: the deterministic
-            verb:pr tools (pr_diff / pr_commits / pr_thread / pr_meta) plus
-            command:review — the same chat-completions agent loop the retired
-            pi-review-action ran: read-only GitHub tools delivered as SEPARATE
-            messages (meta, body, diff, commits, a comment INDEX, and a
-            per-comment read — so no single message is truncated and a long
-            thread's tail stays reachable), a deterministic
-            Verdict: PASS|BLOCK line, ONE PR comment, and $GITHUB_OUTPUT
-            compatibility (response/success/verdict). Also serves the runtime
-            orchestration executor (charly review --plan <path>) that turns a
-            declared review-plan.yml into a step pipeline, so ANY runtime plugin
-            can join the review workflow purely through config. The review
-            rulebook is a 1:1 port of pi-review-action's prompt.txt, resolved at
-            run time via REVIEW_PROMPT_PATH (T1: instructions from main, never
-            the PR under review).
+            The OpenCharly PR-review engine (`command:review`): it assembles the
+            COMPLETE PR context (the body, EVERY changed file's full unified diff,
+            the commits, EVERY comment) into ONE message and makes ONE model call —
+            no tool loop, no plan executor, no runtime prompt file. The prompt is
+            EMBEDDED (prompt.md); every model-behaviour knob is an AI_REVIEW_* env
+            var declared below and consumed by config.go (FromEnv), so an operator
+            sets everything from a GitHub Actions variable without a rebuild. A
+            deterministic Verdict: PASS|BLOCK line, ONE PR comment, and
+            $GITHUB_OUTPUT compatibility (response/success/verdict).
         plugin:
             providers:
-                - verb:pr
                 - command:review
             source: github.com/opencharly/plugin-review/candy/plugin-review
         require:
             - '@github.com/opencharly/layer-gh:v2026.239.1624'
+        # ── THE MODEL-BEHAVIOUR SURFACE (single source) ─────────────────────
+        # Every var the engine reads (config.go FromEnv) is declared here exactly
+        # once. AI_REVIEW_* are org/repo variables set on a GitHub Actions run;
+        # API_KEY + GITHUB tokens are secrets. A test asserts this list covers
+        # every env the engine reads, so a knob cannot silently fail to reach it.
+        var:
+            AI_REVIEW_PROVIDER: ollama-cloud
+            AI_REVIEW_MODEL: deepseek-v4.1-flash
+            AI_REVIEW_BASE_URL: https://ollama.com/v1
+            AI_REVIEW_REASONING_EFFORT: high
+            AI_REVIEW_MAX_TOKENS: "262144"
+            AI_REVIEW_STREAM_IDLE_TIMEOUT: "180"
+            AI_REVIEW_ATTEMPT_TIMEOUT: "900"
+            AI_REVIEW_CONTEXT_TOKENS: "1048576"
+            AI_REVIEW_CONTEXT_MARGIN: "16384"
+            AI_REVIEW_POST_COMMENT: "true"
+            AI_REVIEW_DEBUG: "0"
+        env_accept:
+            - name: AI_REVIEW_PROVIDER
+              description: "LLM provider name."
+            - name: AI_REVIEW_MODEL
+              description: "Model id for the provider."
+            - name: AI_REVIEW_BASE_URL
+              description: "Provider chat-completions base URL."
+            - name: AI_REVIEW_API_KEY
+              description: "Provider API key (secret)."
+            - name: AI_REVIEW_REASONING_EFFORT
+              description: "Thinking depth: high | medium | low | max | none (empty disables)."
+            - name: AI_REVIEW_MAX_TOKENS
+              description: "Shared reasoning+answer token budget."
+            - name: AI_REVIEW_MAX_COMPLETION_TOKENS
+              description: "Answer-only token budget (providers that separate it)."
+            - name: AI_REVIEW_TEMPERATURE
+              description: "Sampling temperature (default 0.2)."
+            - name: AI_REVIEW_TOP_P
+              description: "Nucleus sampling probability mass."
+            - name: AI_REVIEW_SEED
+              description: "Reproducibility seed where supported."
+            - name: AI_REVIEW_STOP
+              description: "Comma-separated stop sequences."
+            - name: AI_REVIEW_FREQUENCY_PENALTY
+              description: "Frequency penalty (-2..2)."
+            - name: AI_REVIEW_PRESENCE_PENALTY
+              description: "Presence penalty (-2..2)."
+            - name: AI_REVIEW_STREAM_IDLE_TIMEOUT
+              description: "Seconds of streamed silence before the turn fails."
+            - name: AI_REVIEW_ATTEMPT_TIMEOUT
+              description: "Whole-request cap in seconds (0 = no cap)."
+            - name: AI_REVIEW_CONTEXT_TOKENS
+              description: "Model context window (the fail-closed size guard)."
+            - name: AI_REVIEW_CONTEXT_MARGIN
+              description: "Headroom kept below the window."
+            - name: AI_REVIEW_PROMPT_EXTRA
+              description: "Operator text appended to the embedded rulebook."
+            - name: AI_REVIEW_POST_COMMENT
+              description: "Post the review as ONE PR comment (true/false)."
+            - name: AI_REVIEW_DEBUG
+              description: "Emit the request trace AND dump the full reasoning."
+            - name: AI_REVIEW_SESSION_ID
+              description: "Session-affinity header value (empty disables)."
+            - name: AI_REVIEW_OUT
+              description: "Write the review body to this file."
+            - name: PR_NUMBER
+              description: "PR number (else read from the event payload)."
+            - name: GITHUB_REPOSITORY
+              description: "owner/repo (default for --repo)."
+            - name: GITHUB_EVENT_PATH
+              description: "pull_request payload path (PR-number fallback)."
+            - name: GITHUB_SERVER_URL
+              description: "GitHub server URL for the comment footer."
+            - name: GITHUB_RUN_ID
+              description: "Actions run id for the comment footer."
+            - name: GITHUB_OUTPUT
+              description: "Actions output file (response/success/verdict)."
+            - name: GH_TOKEN
+              description: "GitHub token for the PR reads."
+            - name: GITHUB_TOKEN
+              description: "Alias of GH_TOKEN."
+        secret_accept:
+            - name: AI_REVIEW_API_KEY
+              description: "LLM provider API key (never committed)."
+              key: charly/api-key/ai-review
         plan:
-            - # ADE check: deterministic build-context check that the module the host
-              # must build + connect ships (go.mod + provider). The full review loop
-              # (tools -> LLM tool-loop -> verdict -> comment) is exercised by the Go
-              # e2e (e2e_test.go) + the live R10.
-              check: the out-of-tree plugin-review candy ships a buildable Go module (go.mod + provider main) the host can build + connect; the full review engine is exercised by the Go e2e + the live R10
+            - # ADE check: the plugin ships a buildable module (go.mod + provider).
+              check: the review plugin ships a buildable Go module (go.mod + provider main) and the embedded rulebook
               id: plugin-review-module-present
               context:
                 - build
-              command: "test -f go.mod && test -f plugin.go"
+              command: "test -f go.mod && test -f plugin.go && test -f prompt.md && test -f prompt_embed.go"
+            - # ADE check: the engine self-test resolves and the verdict matcher is exact.
+              check: the review command self-tests green (command:review resolves)
+              id: ade-review-present
+              context: [runtime]
+              command: charly review --self-test
+              exit_status: 0
+            - check: verdict extraction is exact (PASS/BLOCK only, line-anchored)
+              id: ade-verdict-matcher
+              context: [runtime]
+              command: charly review --self-test-verdict
+              exit_status: 0
 
 review-skill:
     skill:
@@ -41,38 +124,34 @@ review-skill:
         family: review
         owner: plugin-review
         description: |-
-            The `charly review` read-only GitHub PR review engine — the chat-completions review
-            loop, verb:pr tools, a deterministic Verdict: PASS|BLOCK. Use to review a PR or run a
-            declared review plan.
+            The `charly review` PR-review engine — assembles the complete PR context into
+            ONE message and makes ONE model call for a deterministic Verdict: PASS|BLOCK.
+            Use to review a PR.
         triggers:
-            - "`charly review` / review a PR / PR verdict / review plan"
+            - "`charly review` / review a PR / PR verdict"
         content: |
-            # charly review — read-only GitHub PR review
+            # charly review — PR review engine
 
-            `charly review` is OpenCharly's gate reviewer. Served by `candy/plugin-review`
+            `charly review` is OpenCharly's gate reviewer, served by `candy/plugin-review`
             (`command:review`, out-of-process over gRPC).
 
-            ## What it provides
+            ## How it works
 
-            - the deterministic `verb:pr` tools — `pr_diff`, `pr_commits`, `pr_thread`, `pr_meta`;
-            - `command:review` — the same chat-completions agent loop the retired
-              `pi-review-action` ran: read-only GitHub tools delivered as SEPARATE messages
-              (meta, body, diff, commits, a comment INDEX, and a per-comment read — so a long
-              thread's newest comments stay reachable and nothing is lost to a message cap), a
-              deterministic `Verdict: PASS|BLOCK` line, ONE PR comment, and `$GITHUB_OUTPUT`
-              compatibility (`response`/`success`/`verdict`);
-            - the runtime orchestration executor (`charly review --plan <path>`) that turns a
-              declared `review-plan.yml` into a step pipeline, so any runtime plugin can join the
-              review workflow purely through config.
+            ONE path: assemble the COMPLETE PR context (the body, EVERY changed file's full
+            unified diff, the commits, and every comment) → ONE message → ONE model call →
+            extract the deterministic `Verdict: PASS|BLOCK` line → emit the effects
+            (`--out`, `$GITHUB_OUTPUT`, ONE PR comment).
 
-            The review rulebook is a 1:1 port of `pi-review-action`'s `prompt.txt`, resolved at
-            run time via `REVIEW_PROMPT_PATH` (instructions come from `main`, never the PR).
+            The prompt is EMBEDDED in the binary (`prompt.md`) — no external file is read at
+            run time, so a run cannot be redirected by an environment path. Every
+            model-behaviour knob is an `AI_REVIEW_*` env var, declared in `charly.yml`
+            (`env_accept`) and consumed in `config.go` — set them as Org/repo GitHub Actions
+            variables. `AI_REVIEW_DEBUG=1` emits the full request trace AND the model's
+            reasoning, which is what an RCA needs.
 
-            ## When to use it
-
-            To review a PR (the `charly/pr-validator` gate) or to author a custom review plan.
+            The fail-closed context guard refuses a PR too large for the window rather than
+            truncating it: split the PR, or raise `AI_REVIEW_CONTEXT_TOKENS`.
 
             ## Cross-References
 
             - `/charly-internals:git-workflow` — the PR-only landing + validator gate.
-            - `/charly-pipeline:pipeline` — the runtime the plan executor builds on.
