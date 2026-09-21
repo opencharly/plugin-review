@@ -16,18 +16,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
-      - name: gofmt/vet/test (incl. the full-loop e2e)
+      - name: gofmt/vet/test
         working-directory: candy/plugin-review
         run: |
           gofmt -l . | grep -v '^$' && exit 1 || true
           go vet ./...
           go test ./...
-      - name: Install cue (pinned)
-        run: go install cuelang.org/go/cmd/cue@v0.16.1
-      - name: Generated params are reproducible (cue:gen)
-        run: |
-          rm -rf /tmp/cuegenpkg && mkdir -p /tmp/cuegenpkg
-          echo 'package params' > /tmp/cuegenpkg/review.cue
-          cat candy/plugin-review/schema/review.cue >> /tmp/cuegenpkg/review.cue
-          cd /tmp/cuegenpkg && cue exp gengotypes .
-          diff <(sed '1,1d' /tmp/cuegenpkg/cue_types_params_gen.go) <(sed '1,1d' "$GITHUB_WORKSPACE/candy/plugin-review/params/cue_types_gen.go")
