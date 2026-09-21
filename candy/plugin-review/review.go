@@ -135,12 +135,10 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 }
 
 // Emit is the ONE place a review result reaches the outside world: the --out file,
-// $GITHUB_OUTPUT, and (optionally) ONE PR comment. It is called exactly once.
+// $GITHUB_OUTPUT, and (optionally) ONE PR comment. It is called exactly once, by
+// Run, AFTER Run has validated the verdict — so it writes, it does not re-judge.
 func Emit(ctx context.Context, cfg Config, body string) error {
 	_, distinct, n := extractVerdict(body)
-	if n > 0 && len(distinct) != 1 {
-		return fmt.Errorf("ambiguous verdict: multiple distinct Verdict lines: %v", distinct)
-	}
 	writeGHOutputs(body, n == 1 && len(distinct) == 1, distinct)
 	fmt.Println("plugin-review: verdict_lines=" + fmt.Sprint(n) + " distinct=" + fmt.Sprint(distinct))
 	if cfg.OutPath != "" {
@@ -159,14 +157,36 @@ func Emit(ctx context.Context, cfg Config, body string) error {
 }
 
 // Run is the top-level command effect: Review then Emit. It returns the process
-// exit code the charly host maps (0 = a verdict was produced and emitted).
+// exit code the charly host maps. The contract is FAIL-CLOSED and matches the
+// gate's taxonomy: exit 0 ONLY when a single unambiguous verdict was produced and
+// emitted; a verdict-less review is exit 1 (an INCONCLUSIVE class the gate keeps
+// RED) so a missing verdict can never read as a pass.
 func Run(ctx context.Context, cfg Config) (int, error) {
 	body, err := Review(ctx, cfg)
 	if err != nil {
 		return 1, err
 	}
+	exit, err := verdictExit(body)
+	if exit != 0 || err != nil {
+		return exit, err
+	}
 	if err := Emit(ctx, cfg, body); err != nil {
 		return 2, err
+	}
+	return 0, nil
+}
+
+// verdictExit is the FAIL-CLOSED verdict contract in ONE place: exit 0 ONLY for a
+// single unambiguous verdict; no verdict is exit 1 (the INCONCLUSIVE class the
+// gate keeps RED); a mixed PASS+BLOCK is exit 2. Run uses it, and its test drives
+// it directly.
+func verdictExit(body string) (int, error) {
+	_, distinct, n := extractVerdict(body)
+	if n == 0 {
+		return 1, fmt.Errorf("inconclusive: the review produced no Verdict line — this is NOT a review verdict (the required check stays RED)")
+	}
+	if len(distinct) != 1 {
+		return 2, fmt.Errorf("inconclusive: ambiguous verdict — multiple distinct Verdict lines: %v", distinct)
 	}
 	return 0, nil
 }

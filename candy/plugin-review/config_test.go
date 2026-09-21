@@ -8,11 +8,13 @@ import (
 	"testing"
 )
 
-// TestConfigSurfaceMatchesCharlyYML is the mechanical guard for the defect that
-// made CI runs undebuggable: AI_REVIEW_DEBUG was set in the workflow but absent
-// from the candy's charly.yml env_accept, so the charly host never passed it to
-// the plugin. Every env var the engine READS must be DECLARED in charly.yml, and
-// vice versa — one list, asserted.
+// TestConfigSurfaceMatchesCharlyYML asserts the candy's declared env surface
+// (charly.yml) EQUALS the env the engine reads (config.go FromEnv). It keeps the
+// two lists in lockstep, so a NEW knob cannot be added to the code without being
+// declared (and vice versa). The values themselves arrive via the process
+// environment (charly passes the ambient env to a command plugin); the charly.yml
+// declaration is the documented surface and the home the future charly
+// env-injection capability will populate.
 func TestConfigSurfaceMatchesCharlyYML(t *testing.T) {
 	declared := declaredEnv(t, "charly.yml")
 	read := readsEnv(t)

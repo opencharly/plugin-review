@@ -10,18 +10,19 @@ import (
 
 // config.go — THE single configuration surface for the review engine.
 //
-// One struct, one constructor (FromEnv), one place every knob is named. There is
-// no second config path: the command, the (removed) plan executor and the tests
-// all build the SAME Config. Every field maps to exactly one AI_REVIEW_* env var,
-// and every var is DECLARED in the candy's charly.yml (env_accept) so the charly
-// host passes it through and an operator can see the full surface in one file.
+// One struct, one constructor (FromEnv), one place every knob is named. Every
+// field maps to exactly one AI_REVIEW_* env var; the values arrive through the
+// PROCESS ENVIRONMENT (charly's commandExecEnv passes the ambient env to an
+// out-of-process plugin), so an operator sets them as GitHub Actions org/repo
+// variables or in the shell.
 //
-// Design rules (R3): a knob exists here ONLY if the engine reads it; a var exists
-// in charly.yml ONLY if it is read here. The two lists are kept identical, and
-// TestConfigSurfaceMatchesCharlyYML asserts it mechanically, so a new knob cannot
-// silently fail to reach the engine (the defect that made CI runs undebuggable:
-// AI_REVIEW_DEBUG was set in the workflow but absent from env_accept, so it never
-// arrived).
+// Every var is also DECLARED in the candy's charly.yml (env_accept, with default
+// var: values) as the documented surface and single source of truth. NOTE: charly
+// does not yet INJECT a candy var: block into a command plugin's environment (the
+// dispatch env is the ambient environ + CHARLY_BIN); wiring that is the charly
+// env-injection cutover. Until then the charly.yml declaration documents the
+// surface and TestConfigSurfaceMatchesCharlyYML asserts the declaration list
+// EQUALS what FromEnv reads, so a knob cannot silently drift out of lockstep.
 
 // Config is the fully-resolved review configuration.
 type Config struct {
