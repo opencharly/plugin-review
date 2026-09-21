@@ -51,11 +51,7 @@ func run(args []string) (int, error) {
 	case "self-test-verdict":
 		return runVerdictSelfTest()
 	default:
-		exit, err := Run(context.Background(), cfg)
-		if err != nil && exit == 0 {
-			exit = 1
-		}
-		return exit, err
+		return Run(context.Background(), cfg)
 	}
 }
 

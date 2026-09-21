@@ -15,27 +15,30 @@ import (
 
 // review.go — the review engine. ONE path, from first principles:
 //
-//	assemble the COMPLETE PR context  →  ONE LLM call  →  extract the verdict  →  emit effects.
+//	assemble the COMPLETE PR context  →  PRIME one message  →  bounded tool loop
+//	                                  →  extract the verdict  →  emit effects.
 //
 // There is no plan executor, no fixture branch, and no pass retry; the tool loop
-// is bounded (see generate) and exists only as a verification surface.
-// Each of those was accidental complexity that produced the runaway thinking
-// (fragmented context + discarded reasoning) or the confusing "what is actually
-// running" problem (a --plan path that wrapped a single review step; env read in
-// several places). This file is the whole engine:
+// is bounded (see generate) and exists only as a verification surface — because
+// the model is PRIMED with the full context it rarely needs a tool call, so the
+// loop normally ends after ONE turn. Each removed path was accidental complexity
+// that produced the runaway thinking (fragmented context + discarded reasoning)
+// or the confusing "what is actually running" problem (a --plan path that wrapped
+// a single review step; env read in several places). This file is the whole engine:
 //
 //   - Review(ctx, cfg) runs assemble -> generate -> verdict.
-//   - generate makes the SINGLE model call (with the shared llmkit client).
+//   - generate primes the context, then runs the bounded tool loop (with the
+//     shared llmkit client); up to AI_REVIEW_MAX_TURNS model calls.
 //   - The context guard fails HARD if the assembled input + output reserve cannot
 //     fit the window, so a review never silently truncates.
 //   - A generation failure is classified (deterministic / whole-request cap /
 //     idle stall) and NEVER retried: re-issuing the same request is the measured
 //     amplifier of long runs.
 
-// Review is the pure engine: it assembles the context, makes ONE model call, and
-// returns the review text. It has NO side effects (no comment, no file write) —
-// emitting those is Emit's single job, so the command path and any embedder share
-// ONE engine and fire each effect exactly once.
+// Review is the pure engine: it assembles the context, runs the primed review,
+// and returns the review text. It has NO side effects (no comment, no file write)
+// — emitting those is Emit's single job, so the command path and any embedder
+// share ONE engine and fire each effect exactly once.
 func Review(ctx context.Context, cfg Config) (string, error) {
 	if err := cfg.Validate(); err != nil {
 		return "", err
