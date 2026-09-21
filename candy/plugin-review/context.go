@@ -25,8 +25,7 @@ import (
 //
 // So the assembler reads EVERY changed file's full patch (never a sample, never
 // truncated) and emits ONE priming message; there is no per-file round-trip, no
-// fixture branch, and no plan executor. The tool loop remains only as a
-// verification surface (review.go). A review cannot skim what it was never
+// fixture branch, and no plan executor. A review cannot skim what it was never
 // given, and it is given everything.
 //
 // Line-by-line guarantee: every changed file's complete unified diff is included,
@@ -45,37 +44,29 @@ type Context struct {
 	Assembled string // the exact user message sent to the model
 }
 
-// ChangedFile is one changed file with its FULL patch. The json tags are the
-// verb:pr WIRE shape (the review's render() uses the fields directly).
-// PatchBytes is the index-only patch size: the get_pr_files INDEX carries it
-// (with no Patch text) so the model can see the review's size up front; the
-// get_pr_file tool and pr_files verb carry the patch text and its length.
+// ChangedFile is one changed file with its FULL patch.
 type ChangedFile struct {
-	Path       string `json:"path"`
-	Status     string `json:"status"`
-	Additions  int    `json:"additions"`
-	Deletions  int    `json:"deletions"`
-	PatchBytes int    `json:"patch_bytes"`
-	Patch      string `json:"patch,omitempty"`
+	Path      string
+	Status    string
+	Additions int
+	Deletions int
+	Patch     string
 }
 
-// Commit is one commit row (json tags = the verb:pr wire shape). The previous
-// engine's prCommit declared a `date` key it NEVER populated (always ""), so the
-// field is dropped rather than carried as permanently-empty dead data.
+// Commit is one commit row.
 type Commit struct {
-	SHA     string `json:"sha"`
-	Author  string `json:"author"`
-	Message string `json:"message"`
+	SHA     string
+	Author  string
+	Message string
 }
 
 // Comment is one comment with its FULL body — the prompt requires every comment
 // be considered and dispositioned, so the assembler delivers them all whole.
-// The json tags are the verb:pr wire shape.
 type Comment struct {
-	ID        int    `json:"id"`
-	Author    string `json:"author"`
-	CreatedAt string `json:"created_at"`
-	Body      string `json:"body"`
+	ID        int
+	Author    string
+	CreatedAt string
+	Body      string
 }
 
 // assemble gathers the complete PR context in ONE pass from the canonical client.

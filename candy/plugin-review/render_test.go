@@ -169,7 +169,6 @@ func TestPRFromEventPathReadsPullRequestNumber(t *testing.T) {
 // non-positive env value must fall back to the default, never set a zero/garbage
 // value that would break the run.
 func TestConfigInvalidEnvFallsBack(t *testing.T) {
-	t.Setenv("AI_REVIEW_MAX_TURNS", "not-a-number")
 	t.Setenv("AI_REVIEW_MAX_TOKENS", "-5")
 	t.Setenv("AI_REVIEW_CONTEXT_TOKENS", "abc")
 	t.Setenv("PR_NUMBER", "0")

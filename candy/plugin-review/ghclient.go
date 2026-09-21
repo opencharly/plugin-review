@@ -34,16 +34,15 @@ func (g *ghClient) client() (*ghkit.Client, error) {
 	return g.c, nil
 }
 
-// PRMeta is the PR identity + counts. The json tags are the verb:pr WIRE shape —
-// a consumer-visible contract, so they are explicit and tested.
+// PRMeta is the PR identity + counts the review context renders.
 type PRMeta struct {
-	Title        string `json:"title"`
-	State        string `json:"state"`
-	HeadSHA      string `json:"head_sha"`
-	BaseSHA      string `json:"base_sha"`
-	Branch       string `json:"branch"`
-	ChangedLines int    `json:"changed_lines"`
-	ChangedFiles int    `json:"changed_files"`
+	Title        string
+	State        string
+	HeadSHA      string
+	BaseSHA      string
+	Branch       string
+	ChangedLines int
+	ChangedFiles int
 }
 
 func (g *ghClient) meta(ctx context.Context, repo string, pr int) (PRMeta, error) {
@@ -87,8 +86,7 @@ func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFil
 	out := make([]ChangedFile, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, ChangedFile{
-			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions,
-			PatchBytes: len(f.Patch), Patch: f.Patch,
+			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
 		})
 	}
 	return out, nil

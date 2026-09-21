@@ -15,20 +15,18 @@ import (
 
 // review.go — the review engine. ONE path, from first principles:
 //
-//	assemble the COMPLETE PR context  →  PRIME one message  →  bounded tool loop
+//	assemble the COMPLETE PR context  →  ONE message  →  ONE model call
 //	                                  →  extract the verdict  →  emit effects.
 //
-// There is no plan executor, no fixture branch, and no pass retry; the tool loop
-// is bounded (see generate) and exists only as a verification surface — because
-// the model is PRIMED with the full context it rarely needs a tool call, so the
-// loop normally ends after ONE turn. Each removed path was accidental complexity
-// that produced the runaway thinking (fragmented context + discarded reasoning)
-// or the confusing "what is actually running" problem (a --plan path that wrapped
-// a single review step; env read in several places). This file is the whole engine:
+// A review is a pure function of (rulebook, complete PR, model): all input is
+// read ONCE and sent ONCE, so there is nothing for the model to fetch and no
+// tool loop — the model either has the input or the run fails closed. Each
+// removed path (the tool loop, the --plan executor, fixture mode, retries) was
+// accidental complexity that produced the runaway thinking (fragmented context +
+// discarded reasoning) or the confusing "what is actually running" problem.
 //
 //   - Review(ctx, cfg) runs assemble -> generate -> verdict.
-//   - generate primes the context, then runs the bounded tool loop (with the
-//     shared llmkit client); up to AI_REVIEW_MAX_TURNS model calls.
+//   - generate makes ONE llmkit call (no tools).
 //   - The context guard fails HARD if the assembled input + output reserve cannot
 //     fit the window, so a review never silently truncates.
 //   - A generation failure is classified (deterministic / whole-request cap /
@@ -164,11 +162,10 @@ func verdictExit(body string) (int, error) {
 	return 0, nil
 }
 
-// checkBudget is the fail-closed context guard. It estimates a conversation's
-// size in tokens (a conservative hardcoded ratio — see below) and fails if
-// input + output reserve exceeds the window. It is called BOTH before the loop
-// (on the primed prompt+context) AND on every turn inside it, so tool results
-// appended during the loop cannot push the request past the window.
+// checkBudget is the fail-closed context guard. It estimates the ONE request's
+// size in tokens (a conservative hardcoded ratio — see below) and fails if the
+// input + output reserve exceeds the window, so an over-cap PR is refused rather
+// than truncated.
 //
 // The ratio is a deliberate constant, not the provider's reported count: the
 // guard must trip BEFORE a request is sent, when no usage is available yet. Once
