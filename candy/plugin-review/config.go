@@ -50,7 +50,7 @@ type Config struct {
 	// Temperature (AI_REVIEW_TEMPERATURE); Nil = the review default.
 	Temperature *float64
 	// TopP is the nucleus-sampling probability mass (AI_REVIEW_TOP_P). The
-	// default is the model vendor's recommended value (see defaultTopP).
+	// default is the model vendor's recommended value (see reviewTopP).
 	TopP *float64
 	// Seed forces determinism where the provider supports it (AI_REVIEW_SEED).
 	Seed *int64
