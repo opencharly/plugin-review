@@ -131,7 +131,7 @@ func TestGenerateRetriesOnceAtLowerEffortOnBudgetExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if calls != 2 {
-		t.Fatalf("expected ONE step down (2 calls), got %d", calls)
+		t.Fatalf("expected exactly ONE retry (2 calls), got %d", calls)
 	}
 	if _, _, n := extractVerdict(out); n != 1 {
 		t.Fatalf("the retry must yield a verdict, got %q", out)
