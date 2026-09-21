@@ -138,13 +138,18 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 // Emit is the ONE place a review result reaches the outside world: the --out file,
 // $GITHUB_OUTPUT, and (optionally) ONE PR comment. It is called exactly once, by
 // Run, AFTER Run has validated the verdict — so it writes, it does not re-judge.
+//
+// A failure to write --out is a REAL error: the workflow reads that file to
+// extract the verdict, so a silent write failure would turn a produced verdict
+// into an INCONCLUSIVE run. The PR comment is deliberately NON-fatal (a network
+// hiccup must not discard a valid verdict); $GITHUB_OUTPUT is best-effort.
 func Emit(ctx context.Context, cfg Config, body string) error {
 	_, distinct, n := extractVerdict(body)
 	writeGHOutputs(body, n == 1 && len(distinct) == 1, distinct)
 	fmt.Println("plugin-review: verdict_lines=" + fmt.Sprint(n) + " distinct=" + fmt.Sprint(distinct))
 	if cfg.OutPath != "" {
 		if err := os.WriteFile(cfg.OutPath, []byte(body), 0o644); err != nil {
-			fmt.Println("plugin-review: out write failed (non-fatal): " + err.Error())
+			return fmt.Errorf("write --out %s: %w", cfg.OutPath, err)
 		}
 	}
 	if cfg.PostComment && cfg.PR > 0 && cfg.Repo != "" {

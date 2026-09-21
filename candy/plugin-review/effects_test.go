@@ -61,3 +61,14 @@ func TestEmitNoVerdictStillWritesSuccessFalse(t *testing.T) {
 		t.Errorf("a verdict-less body must write success=false: %q", raw)
 	}
 }
+
+// TestEmitOutWriteFailureIsFatal pins finding 2's fix: a failure to write --out is
+// a REAL error (the workflow reads that file for the verdict), so Run's
+// `if err != nil { return 2, err }` arm is live.
+func TestEmitOutWriteFailureIsFatal(t *testing.T) {
+	cfg := Config{OutPath: "/proc/does-not-exist/review.txt", PostComment: false}
+	t.Setenv("GITHUB_OUTPUT", "")
+	if err := Emit(context.Background(), cfg, "Verdict: PASS\n"); err == nil {
+		t.Fatal("a failed --out write must be a real error, not a silent continue")
+	}
+}

@@ -23,11 +23,11 @@ import (
 //     verdict in 2m55s — the tools stay available for follow-up but the primed
 //     context means they are rarely needed.
 //
-// So the assembler reads EVERY changed file's full patch and emits ONE priming
-// message; there is no per-file round-trip, no fixture branch, and no plan
-// executor. The tool loop remains only as a verification surface (review.go).
-// patch (never a sample, never truncated) — a review cannot skim what it was
-// never given, and it is given everything.
+// So the assembler reads EVERY changed file's full patch (never a sample, never
+// truncated) and emits ONE priming message; there is no per-file round-trip, no
+// fixture branch, and no plan executor. The tool loop remains only as a
+// verification surface (review.go). A review cannot skim what it was never
+// given, and it is given everything.
 //
 // Line-by-line guarantee: every changed file's complete unified diff is included,
 // in order, each under a FILE header carrying its status and ±counts. The prompt
@@ -59,7 +59,9 @@ type ChangedFile struct {
 	Patch      string `json:"patch,omitempty"`
 }
 
-// Commit is one commit row (json tags = the verb:pr wire shape).
+// Commit is one commit row (json tags = the verb:pr wire shape). The previous
+// engine's prCommit declared a `date` key it NEVER populated (always ""), so the
+// field is dropped rather than carried as permanently-empty dead data.
 type Commit struct {
 	SHA     string `json:"sha"`
 	Author  string `json:"author"`
