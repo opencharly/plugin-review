@@ -221,10 +221,11 @@ func TestOfficialSamplingDefaults(t *testing.T) {
 
 // TestSamplingTrace pins the debug request trace: it must render the RESOLVED
 // sampling (so a bare-environment run proves the defaults applied), and must
-// print a knob that FromEnv leaves nil (TopP/FrequencyPenalty/PresencePenalty in
-// a bare Config) as "nil" rather than the default, so "unset" is distinguishable
-// from an explicit zero. Temperature always resolves, so it never prints nil.
-// Fails without samplingTrace.
+// print a pointer knob that is genuinely nil — only a bare Config{} leaves
+// TopP/FrequencyPenalty/PresencePenalty nil; FromEnv defaults all three — as
+// "nil" rather than the default, so "unset" is distinguishable from an explicit
+// zero. Temperature always resolves, so it never prints nil. Fails without
+// samplingTrace.
 func TestSamplingTrace(t *testing.T) {
 	t.Setenv("AI_REVIEW_PROVIDER", "p")
 	t.Setenv("AI_REVIEW_MODEL", "m")
