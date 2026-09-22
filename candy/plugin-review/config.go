@@ -49,7 +49,8 @@ type Config struct {
 	MaxCompletionTokens *int64
 	// Temperature (AI_REVIEW_TEMPERATURE); Nil = the review default.
 	Temperature *float64
-	// TopP (AI_REVIEW_TOP_P); Nil = provider default.
+	// TopP is the nucleus-sampling probability mass (AI_REVIEW_TOP_P). The
+	// default is the model vendor's recommended value (see reviewTopP).
 	TopP *float64
 	// Seed forces determinism where the provider supports it (AI_REVIEW_SEED).
 	Seed *int64
@@ -114,7 +115,16 @@ const (
 	DefaultAttemptTimeout        = 15 * time.Minute
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
-	reviewTemperature            = 0.2
+	// The shipped, measured-BEST model-behaviour default set for
+	// deepseek-v4.1-flash: the vendor's official sampling (1.0/0.95) PLUS the
+	// frequency/presence penalties. The sampling alone is not enough on the
+	// longest reviews; the full four-value set is the configuration that
+	// measured zero collapses (26/26), versus one collapse in 17 at sampling
+	// alone. One configuration, every value env-overridable.
+	reviewTemperature       = 1.0
+	reviewTopP              = 0.95
+	defaultFrequencyPenalty = 0.5
+	defaultPresencePenalty  = 1.0
 )
 
 // FromEnv builds the Config from the process environment. It is THE constructor:
@@ -145,9 +155,25 @@ func FromEnv() Config {
 	c.MaxCompletionTokens = envInt64Ptr("AI_REVIEW_MAX_COMPLETION_TOKENS")
 	c.Temperature = envFloatPtr("AI_REVIEW_TEMPERATURE")
 	c.TopP = envFloatPtr("AI_REVIEW_TOP_P")
+	if c.TopP == nil {
+		def := reviewTopP
+		c.TopP = &def
+	}
 	c.Seed = envInt64Ptr("AI_REVIEW_SEED")
+	// The measured-BEST default set (see the const block): the penalties ship
+	// defaulted with the official sampling, because that four-value combination
+	// is the one that measured zero collapses (26/26) versus one in 17 at the
+	// sampling alone. Both are env-overridable.
 	c.FrequencyPenalty = envFloatPtr("AI_REVIEW_FREQUENCY_PENALTY")
+	if c.FrequencyPenalty == nil {
+		def := defaultFrequencyPenalty
+		c.FrequencyPenalty = &def
+	}
 	c.PresencePenalty = envFloatPtr("AI_REVIEW_PRESENCE_PENALTY")
+	if c.PresencePenalty == nil {
+		def := defaultPresencePenalty
+		c.PresencePenalty = &def
+	}
 	c.Stop = envList("AI_REVIEW_STOP")
 
 	// identity: PR_NUMBER then the pull_request event payload; --repo/args are

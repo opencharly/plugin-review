@@ -180,3 +180,71 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 		t.Errorf("invalid AI_REVIEW_CONTEXT_TOKENS must fall back to %d, got %d", DefaultContextTokens, c.ContextTokens)
 	}
 }
+
+// TestOfficialSamplingDefaults pins the model vendor's official recommended
+// sampling for deepseek-v4.1-flash and the ROOT FIX for the engine's
+// degenerate-repetition collapse: temperature=1.0, top_p=0.95. At the old
+// near-greedy 0.2 the model repeated one token ("Hmm.") tens of thousands of
+// times and returned no answer; the official values yield a verdict (measured A/B
+// on the same PR). Explicit overrides must win; the frequency/presence penalties
+// default to the measured-best guard values and are likewise overridable.
+func TestOfficialSamplingDefaults(t *testing.T) {
+	os.Unsetenv("AI_REVIEW_TEMPERATURE")
+	os.Unsetenv("AI_REVIEW_TOP_P")
+	os.Unsetenv("AI_REVIEW_FREQUENCY_PENALTY")
+	os.Unsetenv("AI_REVIEW_PRESENCE_PENALTY")
+	c := FromEnv()
+	if got := temperatureOrDefault(c.Temperature); got == nil || *got != 1.0 {
+		t.Errorf("temperature default = %v, want 1.0 (the vendor's value)", got)
+	}
+	if c.TopP == nil || *c.TopP != 0.95 {
+		t.Errorf("top_p default = %v, want 0.95 (the vendor's value)", c.TopP)
+	}
+	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != defaultFrequencyPenalty {
+		t.Errorf("frequency penalty default = %v, want %v (measured-best guard)", c.FrequencyPenalty, defaultFrequencyPenalty)
+	}
+	if c.PresencePenalty == nil || *c.PresencePenalty != defaultPresencePenalty {
+		t.Errorf("presence penalty default = %v, want %v (measured-best guard)", c.PresencePenalty, defaultPresencePenalty)
+	}
+	t.Setenv("AI_REVIEW_TEMPERATURE", "0.3")
+	t.Setenv("AI_REVIEW_TOP_P", "0.8")
+	t.Setenv("AI_REVIEW_FREQUENCY_PENALTY", "0.4")
+	t.Setenv("AI_REVIEW_PRESENCE_PENALTY", "0.6")
+	c = FromEnv()
+	if c.Temperature == nil || *c.Temperature != 0.3 || c.TopP == nil || *c.TopP != 0.8 {
+		t.Errorf("sampling overrides not honoured: t=%v p=%v", c.Temperature, c.TopP)
+	}
+	if c.FrequencyPenalty == nil || *c.FrequencyPenalty != 0.4 || c.PresencePenalty == nil || *c.PresencePenalty != 0.6 {
+		t.Errorf("penalty overrides not honoured: fp=%v pp=%v", c.FrequencyPenalty, c.PresencePenalty)
+	}
+}
+
+// TestSamplingTrace pins the debug request trace: it must render the RESOLVED
+// sampling (so a bare-environment run proves the defaults applied), and must
+// print a pointer knob that is genuinely nil — only a bare Config{} leaves
+// TopP/FrequencyPenalty/PresencePenalty nil; FromEnv defaults all three — as
+// "nil" rather than the default, so "unset" is distinguishable from an explicit
+// zero. Temperature always resolves, so it never prints nil. Fails without
+// samplingTrace.
+func TestSamplingTrace(t *testing.T) {
+	t.Setenv("AI_REVIEW_PROVIDER", "p")
+	t.Setenv("AI_REVIEW_MODEL", "m")
+	t.Setenv("AI_REVIEW_BASE_URL", "http://x")
+	os.Unsetenv("AI_REVIEW_TEMPERATURE")
+	os.Unsetenv("AI_REVIEW_TOP_P")
+	os.Unsetenv("AI_REVIEW_FREQUENCY_PENALTY")
+	os.Unsetenv("AI_REVIEW_PRESENCE_PENALTY")
+	got := samplingTrace(FromEnv())
+	want := "sampling=(temperature=1 top_p=0.95 frequency_penalty=0.5 presence_penalty=1)"
+	if got != want {
+		t.Errorf("samplingTrace defaults = %q, want %q", got, want)
+	}
+	// An explicitly-nil penalty set (no defaults applied) must show "nil", and a
+	// nil temperature must show the resolved default, not nil.
+	bare := Config{}
+	if s := samplingTrace(bare); !strings.Contains(s, "frequency_penalty=nil") {
+		t.Errorf("samplingTrace(nil penalties) = %q, want frequency_penalty=nil", s)
+	} else if !strings.Contains(s, "temperature=1") {
+		t.Errorf("samplingTrace(nil temperature) = %q, want the resolved default temperature=1", s)
+	}
+}

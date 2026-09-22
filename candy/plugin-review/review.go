@@ -73,8 +73,9 @@ func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
 		{Role: "system", Content: llmkit.Strptr(prompt)},
 		{Role: "user", Content: llmkit.Strptr(user)},
 	}
-	dbg(cfg, "request — reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v context_bytes=(system=%d user=%d) files=%d comments=%d",
+	dbg(cfg, "request — reasoning_effort=%q max_tokens=%d attempt_timeout=%v idle=%v %s context_bytes=(system=%d user=%d) files=%d comments=%d",
 		cfg.ReasoningEffort, cfg.MaxTokens, cfg.AttemptTimeout, cfg.StreamIdleTimeout,
+		samplingTrace(cfg),
 		len(prompt), len(user), len(c.Files), len(c.Comments))
 
 	start := time.Now()
@@ -238,6 +239,27 @@ func dbg(cfg Config, format string, a ...any) {
 	if cfg.Debug {
 		fmt.Printf("plugin-review[debug]: "+format+"\n", a...)
 	}
+}
+
+// f64 dereferences an optional float for the debug trace; a nil pointer prints as
+// "nil" so an unset knob is distinguishable from an explicit zero.
+func f64(p *float64) any {
+	if p == nil {
+		return "nil"
+	}
+	return *p
+}
+
+// samplingTrace renders the RESOLVED sampling the request will carry, so a debug
+// run shows exactly which values the engine sent (a bare-environment run proves
+// the FromEnv defaults resolved). Temperature always prints its resolved value
+// (temperatureOrDefault never yields nil). A pointer knob that is genuinely nil —
+// only a bare Config{} leaves TopP/FrequencyPenalty/PresencePenalty nil, never
+// FromEnv, which defaults all three — prints as "nil", never as a default, so
+// "unset" stays distinguishable from an explicit zero.
+func samplingTrace(cfg Config) string {
+	return fmt.Sprintf("sampling=(temperature=%v top_p=%v frequency_penalty=%v presence_penalty=%v)",
+		f64(temperatureOrDefault(cfg.Temperature)), f64(cfg.TopP), f64(cfg.FrequencyPenalty), f64(cfg.PresencePenalty))
 }
 
 func isWholeRequestDeadline(err error) bool {
