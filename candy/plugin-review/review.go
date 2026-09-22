@@ -252,8 +252,10 @@ func f64(p *float64) any {
 
 // samplingTrace renders the RESOLVED sampling the request will carry, so a debug
 // run shows exactly which values the engine sent (a bare-environment run proves
-// the FromEnv defaults resolved). A nil knob prints as "nil", never as the
-// default, so "unset" and "explicit zero" stay distinguishable.
+// the FromEnv defaults resolved). Temperature always prints its resolved value
+// (temperatureOrDefault never yields nil); a knob that FromEnv leaves unset —
+// TopP/FrequencyPenalty/PresencePenalty in a bare Config — prints as "nil", never
+// as a default, so "unset" stays distinguishable from an explicit zero.
 func samplingTrace(cfg Config) string {
 	return fmt.Sprintf("sampling=(temperature=%v top_p=%v frequency_penalty=%v presence_penalty=%v)",
 		f64(temperatureOrDefault(cfg.Temperature)), f64(cfg.TopP), f64(cfg.FrequencyPenalty), f64(cfg.PresencePenalty))
