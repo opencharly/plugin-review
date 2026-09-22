@@ -218,3 +218,30 @@ func TestOfficialSamplingDefaults(t *testing.T) {
 		t.Errorf("penalty overrides not honoured: fp=%v pp=%v", c.FrequencyPenalty, c.PresencePenalty)
 	}
 }
+
+// TestSamplingTrace pins the debug request trace: it must render the RESOLVED
+// sampling (so a bare-environment run proves the defaults applied), and a nil
+// knob must print as "nil" rather than the default, so "unset" is distinguishable
+// from an explicit zero. Fails without samplingTrace.
+func TestSamplingTrace(t *testing.T) {
+	t.Setenv("AI_REVIEW_PROVIDER", "p")
+	t.Setenv("AI_REVIEW_MODEL", "m")
+	t.Setenv("AI_REVIEW_BASE_URL", "http://x")
+	os.Unsetenv("AI_REVIEW_TEMPERATURE")
+	os.Unsetenv("AI_REVIEW_TOP_P")
+	os.Unsetenv("AI_REVIEW_FREQUENCY_PENALTY")
+	os.Unsetenv("AI_REVIEW_PRESENCE_PENALTY")
+	got := samplingTrace(FromEnv())
+	want := "sampling=(temperature=1 top_p=0.95 frequency_penalty=0.5 presence_penalty=1)"
+	if got != want {
+		t.Errorf("samplingTrace defaults = %q, want %q", got, want)
+	}
+	// An explicitly-nil penalty set (no defaults applied) must show "nil", and a
+	// nil temperature must show the resolved default, not nil.
+	bare := Config{}
+	if s := samplingTrace(bare); !strings.Contains(s, "frequency_penalty=nil") {
+		t.Errorf("samplingTrace(nil penalties) = %q, want frequency_penalty=nil", s)
+	} else if !strings.Contains(s, "temperature=1") {
+		t.Errorf("samplingTrace(nil temperature) = %q, want the resolved default temperature=1", s)
+	}
+}
