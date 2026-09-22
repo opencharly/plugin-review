@@ -182,6 +182,47 @@ func TestPostCommentDefaultsOff(t *testing.T) {
 	}
 }
 
+// TestDebugDump covers the resolved-config dump: it must include EVERY knob the
+// engine reads (a missing one is invisible at runtime), show the resolved
+// PostComment, and NEVER leak the API key.
+func TestDebugDump(t *testing.T) {
+	t.Setenv("AI_REVIEW_PROVIDER", "p")
+	t.Setenv("AI_REVIEW_MODEL", "m")
+	t.Setenv("AI_REVIEW_BASE_URL", "http://x")
+	t.Setenv("AI_REVIEW_API_KEY", "super-secret-value")
+	t.Setenv("AI_REVIEW_POST_COMMENT", "true")
+	os.Unsetenv("AI_REVIEW_OUT")
+	c := FromEnv()
+
+	dump := strings.Join(c.DebugDump(), "\n")
+	// Every knob the engine reads must appear, so the dump can never silently
+	// omit one (the whole point of the incident it exists to prevent).
+	for _, name := range []string{
+		"AI_REVIEW_PROVIDER", "AI_REVIEW_MODEL", "AI_REVIEW_BASE_URL", "AI_REVIEW_API_KEY",
+		"AI_REVIEW_REASONING_EFFORT", "AI_REVIEW_MAX_TOKENS", "AI_REVIEW_MAX_COMPLETION_TOKENS",
+		"AI_REVIEW_TEMPERATURE", "AI_REVIEW_TOP_P", "AI_REVIEW_SEED", "AI_REVIEW_STOP",
+		"AI_REVIEW_FREQUENCY_PENALTY", "AI_REVIEW_PRESENCE_PENALTY", "AI_REVIEW_STREAM_IDLE_TIMEOUT",
+		"AI_REVIEW_ATTEMPT_TIMEOUT", "AI_REVIEW_CONTEXT_TOKENS", "AI_REVIEW_CONTEXT_MARGIN",
+		"AI_REVIEW_PROMPT_EXTRA", "AI_REVIEW_POST_COMMENT", "AI_REVIEW_DEBUG", "AI_REVIEW_OUT",
+		"AI_REVIEW_SESSION_ID", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_SERVER_URL", "PR_NUMBER",
+	} {
+		if !strings.Contains(dump, name) {
+			t.Errorf("DebugDump omits %s — a debug run must show every knob", name)
+		}
+	}
+	// The resolved value is shown (the incident's answer).
+	if !strings.Contains(dump, "AI_REVIEW_POST_COMMENT") || !strings.Contains(dump, "true") {
+		t.Errorf("DebugDump must show the RESOLVED PostComment value:\n%s", dump)
+	}
+	// The secret must NEVER appear.
+	if strings.Contains(dump, "super-secret-value") {
+		t.Errorf("DebugDump leaked the API key:\n%s", dump)
+	}
+	if !strings.Contains(dump, "<set, 18 chars>") {
+		t.Errorf("DebugDump should fingerprint the key by length, not print it:\n%s", dump)
+	}
+}
+
 // TestVerdictMatching pins the line-anchored verdict contract the gate parses.
 func TestVerdictMatching(t *testing.T) {
 	cases := []struct {

@@ -45,6 +45,14 @@ func Review(ctx context.Context, cfg Config) (string, error) {
 	if err := cfg.Validate(); err != nil {
 		return "", err
 	}
+	// FULL resolved-config dump FIRST, so a debug run shows exactly how every
+	// AI_REVIEW_* / GITHUB_* input resolved before anything else happens.
+	if cfg.Debug {
+		fmt.Println("plugin-review[debug]: resolved config:")
+		for _, line := range cfg.DebugDump() {
+			fmt.Println("  " + line)
+		}
+	}
 	gh := newGHClient()
 	c, err := assemble(ctx, cfg, gh)
 	if err != nil {
@@ -128,6 +136,13 @@ func Emit(ctx context.Context, cfg Config, body string) error {
 		if err := newGHClient().postComment(ctx, cfg.Repo, cfg.PR, body+footer); err != nil {
 			fmt.Println("plugin-review: comment post failed (non-fatal): " + err.Error())
 		}
+	} else {
+		// Make the NOT-posting decision observable: an operator debugging "the
+		// reviewer ran but no comment appeared" needs to see WHY. The three inputs
+		// are printed so an unset AI_REVIEW_POST_COMMENT (off by default) is
+		// distinguishable from a missing PR/repo identity.
+		fmt.Printf("plugin-review: no PR comment (post_comment=%v pr=%d repo=%q)\n",
+			cfg.PostComment, cfg.PR, cfg.Repo)
 	}
 	return nil
 }
