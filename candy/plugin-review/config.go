@@ -115,18 +115,14 @@ const (
 	DefaultAttemptTimeout        = 15 * time.Minute
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
-	// reviewTemperature / reviewTopP are the model vendor's OFFICIAL recommended
-	// sampling parameters for deepseek-v4.1-flash (HuggingFace model card:
-	// temperature=1.0, top_p=0.95). They are the ROOT FIX for the engine's
-	// DEGENERATE-REPETITION collapse: at temperature=0.2 (a near-greedy choice the
-	// vendor never recommends) the model re-selected one high-probability token
-	// ("Hmm.") 2,533-38,472 times and returned no answer. Measured A/B on the same
-	// PR: temp=0.2 -> collapse (34,974x "Hmm.", no verdict); temp=1.0/top_p=0.95 ->
-	// a verdict. AI_REVIEW_TEMPERATURE / _TOP_P override them.
-	reviewTemperature = 1.0
-	reviewTopP        = 0.95
-	// Measured-best repetition guard (see FromEnv): 16/17 runs OK WITHOUT the
-	// penalties vs 26/26 WITH them, at the official sampling above.
+	// The shipped, measured-BEST model-behaviour default set for
+	// deepseek-v4.1-flash: the vendor's official sampling (1.0/0.95) PLUS the
+	// frequency/presence penalties. The sampling alone is not enough on the
+	// longest reviews; the full four-value set is the configuration that
+	// measured zero collapses (26/26), versus one collapse in 17 at sampling
+	// alone. One configuration, every value env-overridable.
+	reviewTemperature       = 1.0
+	reviewTopP              = 0.95
 	defaultFrequencyPenalty = 0.5
 	defaultPresencePenalty  = 1.0
 )
@@ -164,12 +160,10 @@ func FromEnv() Config {
 		c.TopP = &def
 	}
 	c.Seed = envInt64Ptr("AI_REVIEW_SEED")
-	// MEASURED-BEST repetition guard. The vendor recommends no penalties, but at
-	// the official sampling alone the engine still collapses on the longest
-	// generations: measured 16/17 runs OK (1 collapse) WITHOUT the guard vs 26/26
-	// WITH it. Penalties directly suppress the repetition precursor that causes
-	// that collapse, so the shipped default is the measured-best configuration,
-	// not the vendor-pure one. Both are env-overridable.
+	// The measured-BEST default set (see the const block): the penalties ship
+	// defaulted with the official sampling, because that four-value combination
+	// is the one that measured zero collapses (26/26) versus one in 17 at the
+	// sampling alone. Both are env-overridable.
 	c.FrequencyPenalty = envFloatPtr("AI_REVIEW_FREQUENCY_PENALTY")
 	if c.FrequencyPenalty == nil {
 		def := defaultFrequencyPenalty
