@@ -40,7 +40,7 @@ plugin-review:
             AI_REVIEW_ATTEMPT_TIMEOUT: "900"
             AI_REVIEW_CONTEXT_TOKENS: "1048576"
             AI_REVIEW_CONTEXT_MARGIN: "16384"
-            AI_REVIEW_POST_COMMENT: "true"
+            AI_REVIEW_POST_COMMENT: "false"
             AI_REVIEW_DEBUG: "0"
         env_accept:
             - name: AI_REVIEW_PROVIDER

@@ -149,11 +149,36 @@ func TestModelDefaultsMatchCharlyYML(t *testing.T) {
 	wantStr := map[string]string{
 		"AI_REVIEW_REASONING_EFFORT": DefaultReasoningEffort,
 		"AI_REVIEW_MAX_TOKENS":       fmt.Sprintf("%d", DefaultMaxTokens),
+		// POST_COMMENT is a bool; its shipped default is FALSE (opt-in). It must
+		// agree across both surfaces, like every other shipped default.
+		"AI_REVIEW_POST_COMMENT": "false",
 	}
 	for k, v := range wantStr {
 		if got, ok := declared[k]; !ok || got != v {
 			t.Errorf("charly.yml var:%s = %q (present=%v), want %q — the shipped default must match config.go", k, got, ok, v)
 		}
+	}
+}
+
+// TestPostCommentDefaultsOff pins the outward-facing default: AI_REVIEW_POST_COMMENT
+// is FALSE when unset AND when explicitly empty. Posting to a GitHub PR is a side
+// effect, so a caller must opt in; the org sets the variable to "true" in its
+// Actions settings and the workflow forwards it. This test fails if the default is
+// flipped back to true, or if envBool starts treating "" as the default rather than
+// false (which would make the workflow's `vars.X || ”` forward an opt-IN for an
+// unset org var — the 2026-09-22 no-comment incident).
+func TestPostCommentDefaultsOff(t *testing.T) {
+	os.Unsetenv("AI_REVIEW_POST_COMMENT")
+	if c := FromEnv(); c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT unset must default to false, got %v", c.PostComment)
+	}
+	t.Setenv("AI_REVIEW_POST_COMMENT", "")
+	if c := FromEnv(); c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT explicitly empty must be false (the workflow forwards \"\"), got %v", c.PostComment)
+	}
+	t.Setenv("AI_REVIEW_POST_COMMENT", "true")
+	if c := FromEnv(); !c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT=true must opt in, got %v", c.PostComment)
 	}
 }
 

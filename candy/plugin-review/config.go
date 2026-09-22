@@ -89,6 +89,11 @@ type Config struct {
 	// OutPath writes the review body to a file (AI_REVIEW_OUT or --out).
 	OutPath string
 	// PostComment posts the review as ONE PR comment (AI_REVIEW_POST_COMMENT).
+	// Default FALSE: posting to a GitHub PR is an outward-facing side effect, so
+	// a caller must OPT IN explicitly. The org sets the variable to "true" in its
+	// GitHub Actions settings and the workflow forwards it verbatim; an unset OR
+	// explicitly-empty value is off (envBool treats "" as false, consistent with
+	// the default).
 	PostComment bool
 
 	// ── debug ───────────────────────────────────────────────────────────────
@@ -145,7 +150,7 @@ func FromEnv() Config {
 		ContextMarginTokens: envInt("AI_REVIEW_CONTEXT_MARGIN", DefaultContextMargin),
 		Prompt:              embeddedPrompt,
 		PromptExtra:         envStr("AI_REVIEW_PROMPT_EXTRA", ""),
-		PostComment:         envBool("AI_REVIEW_POST_COMMENT", true),
+		PostComment:         envBool("AI_REVIEW_POST_COMMENT", false),
 		Debug:               envBool("AI_REVIEW_DEBUG", false),
 		ServerURL:           envStr("GITHUB_SERVER_URL", "https://github.com"),
 		RepoEnv:             envStr("GITHUB_REPOSITORY", ""),
