@@ -89,6 +89,11 @@ type Config struct {
 	// OutPath writes the review body to a file (AI_REVIEW_OUT or --out).
 	OutPath string
 	// PostComment posts the review as ONE PR comment (AI_REVIEW_POST_COMMENT).
+	// Default FALSE: posting to a GitHub PR is an outward-facing side effect, so
+	// a caller must OPT IN explicitly. The org sets the variable to "true" in its
+	// GitHub Actions settings and the workflow forwards it verbatim; an unset OR
+	// explicitly-empty value is off (envBool treats "" as false, consistent with
+	// the default).
 	PostComment bool
 
 	// ── debug ───────────────────────────────────────────────────────────────
@@ -145,7 +150,7 @@ func FromEnv() Config {
 		ContextMarginTokens: envInt("AI_REVIEW_CONTEXT_MARGIN", DefaultContextMargin),
 		Prompt:              embeddedPrompt,
 		PromptExtra:         envStr("AI_REVIEW_PROMPT_EXTRA", ""),
-		PostComment:         envBool("AI_REVIEW_POST_COMMENT", true),
+		PostComment:         envBool("AI_REVIEW_POST_COMMENT", false),
 		Debug:               envBool("AI_REVIEW_DEBUG", false),
 		ServerURL:           envStr("GITHUB_SERVER_URL", "https://github.com"),
 		RepoEnv:             envStr("GITHUB_REPOSITORY", ""),
@@ -189,6 +194,93 @@ func FromEnv() Config {
 	c.Repo = c.RepoEnv
 	c.OutPath = envStr("AI_REVIEW_OUT", "")
 	return c
+}
+
+// fromEnvStr renders a value that came from envStr: the raw env if set/non-empty,
+// else the resolved default in parentheses.
+func fromEnvStr(name, raw, resolved string) string {
+	if strings.TrimSpace(raw) != "" {
+		return fmt.Sprintf("%s (from env)", resolved)
+	}
+	return fmt.Sprintf("%s (default)", resolved)
+}
+
+// ptrVal renders an optional value: the number, or "<unset>" when nil.
+func ptrVal[T any](p *T) string {
+	if p == nil {
+		return "<unset>"
+	}
+	return fmt.Sprintf("%v", *p)
+}
+
+// DebugDump returns one line per model-behaviour knob: the env var NAME, the RAW
+// value (or <unset>), and the RESOLVED value the run will use. Emitted once at
+// the top of a debug run so an operator sees EXACTLY how every AI_REVIEW_* and
+// GITHUB_* input resolved — the first thing an RCA reads when a run misbehaves
+// (e.g. the 2026-09-22 "validator ran but posted no comment" incident, where the
+// resolved PostComment value was the answer and was nowhere in the log).
+//
+// It is DATA-DRIVEN from a table keyed by the knob name, so adding a knob and
+// forgetting it here is a visible omission in review, not a silent one. The API
+// key is masked — a dump must never leak a credential.
+func (c Config) DebugDump() []string {
+	raw := func(name string) string {
+		if v, ok := os.LookupEnv(name); ok && strings.TrimSpace(v) != "" {
+			// Never print a secret's bytes, even in the raw column.
+			if name == "AI_REVIEW_API_KEY" {
+				return maskSecret(v)
+			}
+			return v
+		}
+		return "<unset>"
+	}
+	// name -> resolved value. Keep in sync with FromEnv (a knob read there
+	// should appear here).
+	resolved := []struct{ name, value string }{
+		{"AI_REVIEW_PROVIDER", c.Provider},
+		{"AI_REVIEW_MODEL", c.Model},
+		{"AI_REVIEW_BASE_URL", c.BaseURL},
+		{"AI_REVIEW_API_KEY", maskSecret(c.APIKey)},
+		{"AI_REVIEW_REASONING_EFFORT", c.ReasoningEffort},
+		{"AI_REVIEW_MAX_TOKENS", fmt.Sprintf("%d", c.MaxTokens)},
+		{"AI_REVIEW_MAX_COMPLETION_TOKENS", ptrVal(c.MaxCompletionTokens)},
+		{"AI_REVIEW_TEMPERATURE", ptrVal(c.Temperature)},
+		{"AI_REVIEW_TOP_P", ptrVal(c.TopP)},
+		{"AI_REVIEW_SEED", ptrVal(c.Seed)},
+		{"AI_REVIEW_STOP", fmt.Sprintf("%v", c.Stop)},
+		{"AI_REVIEW_FREQUENCY_PENALTY", ptrVal(c.FrequencyPenalty)},
+		{"AI_REVIEW_PRESENCE_PENALTY", ptrVal(c.PresencePenalty)},
+		{"AI_REVIEW_STREAM_IDLE_TIMEOUT", c.StreamIdleTimeout.String()},
+		{"AI_REVIEW_ATTEMPT_TIMEOUT", c.AttemptTimeout.String()},
+		{"AI_REVIEW_CONTEXT_TOKENS", fmt.Sprintf("%d", c.ContextTokens)},
+		{"AI_REVIEW_CONTEXT_MARGIN", fmt.Sprintf("%d", c.ContextMarginTokens)},
+		{"AI_REVIEW_PROMPT_EXTRA", fmt.Sprintf("%d bytes", len(c.PromptExtra))},
+		{"AI_REVIEW_POST_COMMENT", fmt.Sprintf("%v", c.PostComment)},
+		{"AI_REVIEW_DEBUG", fmt.Sprintf("%v", c.Debug)},
+		{"AI_REVIEW_OUT", c.OutPath},
+		{"AI_REVIEW_SESSION_ID", c.SessionID},
+		{"AI_REVIEW_MAX_ATTEMPTS", raw("AI_REVIEW_MAX_ATTEMPTS")},
+		{"AI_REVIEW_TOOL_RESULT_MAX_BYTES", raw("AI_REVIEW_TOOL_RESULT_MAX_BYTES")},
+		// runner identity (GITHUB_*, not AI_REVIEW_*)
+		{"GITHUB_REPOSITORY", c.RepoEnv},
+		{"GITHUB_RUN_ID", c.RunID},
+		{"GITHUB_SERVER_URL", c.ServerURL},
+		{"PR_NUMBER", fmt.Sprintf("%d", c.PR)},
+		{"GITHUB_EVENT_PATH", raw("GITHUB_EVENT_PATH")},
+	}
+	out := make([]string, 0, len(resolved))
+	for _, r := range resolved {
+		out = append(out, fmt.Sprintf("%-34s = %-28s (env=%s)", r.name, r.value, raw(r.name)))
+	}
+	return out
+}
+
+// maskSecret returns a length-only fingerprint of a secret, never its bytes.
+func maskSecret(s string) string {
+	if s == "" {
+		return "<unset>"
+	}
+	return fmt.Sprintf("<set, %d chars>", len(s))
 }
 
 // Validate checks the required identity and bounds. A failure is returned BEFORE

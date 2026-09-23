@@ -149,11 +149,77 @@ func TestModelDefaultsMatchCharlyYML(t *testing.T) {
 	wantStr := map[string]string{
 		"AI_REVIEW_REASONING_EFFORT": DefaultReasoningEffort,
 		"AI_REVIEW_MAX_TOKENS":       fmt.Sprintf("%d", DefaultMaxTokens),
+		// POST_COMMENT is a bool; its shipped default is FALSE (opt-in). It must
+		// agree across both surfaces, like every other shipped default.
+		"AI_REVIEW_POST_COMMENT": "false",
 	}
 	for k, v := range wantStr {
 		if got, ok := declared[k]; !ok || got != v {
 			t.Errorf("charly.yml var:%s = %q (present=%v), want %q — the shipped default must match config.go", k, got, ok, v)
 		}
+	}
+}
+
+// TestPostCommentDefaultsOff pins the outward-facing default: AI_REVIEW_POST_COMMENT
+// is FALSE when unset AND when explicitly empty. Posting to a GitHub PR is a side
+// effect, so a caller must opt in; the org sets the variable to "true" in its
+// Actions settings and the workflow forwards it. This test fails if the default is
+// flipped back to true, or if envBool starts treating "" as the default rather than
+// false (which would make the workflow's `vars.X || ”` forward an opt-IN for an
+// unset org var — the 2026-09-22 no-comment incident).
+func TestPostCommentDefaultsOff(t *testing.T) {
+	os.Unsetenv("AI_REVIEW_POST_COMMENT")
+	if c := FromEnv(); c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT unset must default to false, got %v", c.PostComment)
+	}
+	t.Setenv("AI_REVIEW_POST_COMMENT", "")
+	if c := FromEnv(); c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT explicitly empty must be false (the workflow forwards \"\"), got %v", c.PostComment)
+	}
+	t.Setenv("AI_REVIEW_POST_COMMENT", "true")
+	if c := FromEnv(); !c.PostComment {
+		t.Errorf("AI_REVIEW_POST_COMMENT=true must opt in, got %v", c.PostComment)
+	}
+}
+
+// TestDebugDump covers the resolved-config dump: it must include EVERY knob the
+// engine reads (a missing one is invisible at runtime), show the resolved
+// PostComment, and NEVER leak the API key.
+func TestDebugDump(t *testing.T) {
+	t.Setenv("AI_REVIEW_PROVIDER", "p")
+	t.Setenv("AI_REVIEW_MODEL", "m")
+	t.Setenv("AI_REVIEW_BASE_URL", "http://x")
+	t.Setenv("AI_REVIEW_API_KEY", "super-secret-value")
+	t.Setenv("AI_REVIEW_POST_COMMENT", "true")
+	os.Unsetenv("AI_REVIEW_OUT")
+	c := FromEnv()
+
+	dump := strings.Join(c.DebugDump(), "\n")
+	// Every knob the engine reads must appear, so the dump can never silently
+	// omit one (the whole point of the incident it exists to prevent).
+	for _, name := range []string{
+		"AI_REVIEW_PROVIDER", "AI_REVIEW_MODEL", "AI_REVIEW_BASE_URL", "AI_REVIEW_API_KEY",
+		"AI_REVIEW_REASONING_EFFORT", "AI_REVIEW_MAX_TOKENS", "AI_REVIEW_MAX_COMPLETION_TOKENS",
+		"AI_REVIEW_TEMPERATURE", "AI_REVIEW_TOP_P", "AI_REVIEW_SEED", "AI_REVIEW_STOP",
+		"AI_REVIEW_FREQUENCY_PENALTY", "AI_REVIEW_PRESENCE_PENALTY", "AI_REVIEW_STREAM_IDLE_TIMEOUT",
+		"AI_REVIEW_ATTEMPT_TIMEOUT", "AI_REVIEW_CONTEXT_TOKENS", "AI_REVIEW_CONTEXT_MARGIN",
+		"AI_REVIEW_PROMPT_EXTRA", "AI_REVIEW_POST_COMMENT", "AI_REVIEW_DEBUG", "AI_REVIEW_OUT",
+		"AI_REVIEW_SESSION_ID", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_SERVER_URL", "PR_NUMBER",
+	} {
+		if !strings.Contains(dump, name) {
+			t.Errorf("DebugDump omits %s — a debug run must show every knob", name)
+		}
+	}
+	// The resolved value is shown (the incident's answer).
+	if !strings.Contains(dump, "AI_REVIEW_POST_COMMENT") || !strings.Contains(dump, "true") {
+		t.Errorf("DebugDump must show the RESOLVED PostComment value:\n%s", dump)
+	}
+	// The secret must NEVER appear.
+	if strings.Contains(dump, "super-secret-value") {
+		t.Errorf("DebugDump leaked the API key:\n%s", dump)
+	}
+	if !strings.Contains(dump, "<set, 18 chars>") {
+		t.Errorf("DebugDump should fingerprint the key by length, not print it:\n%s", dump)
 	}
 }
 
