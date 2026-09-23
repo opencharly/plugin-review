@@ -47,6 +47,27 @@ func TestRenderIncludesEveryFileWhole(t *testing.T) {
 	}
 }
 
+// TestRenderMarksOmittedPatchExplicitly pins the R1 fix for
+// opencharly/plugin-review#20: a file whose patch GitHub omitted must NEVER
+// render as a silent empty ```diff``` block (which a reviewer reads as "no
+// change"). The file reader recovers such patches from the raw .diff; when it
+// cannot, render() must say so in-line.
+func TestRenderMarksOmittedPatchExplicitly(t *testing.T) {
+	c := &Context{
+		Meta: PRMeta{Title: "T", HeadSHA: "h"},
+		Files: []ChangedFile{
+			{Path: "charly.yml", Status: "modified", Additions: 60, Deletions: 1697, Patch: "", NoPatch: true},
+		},
+	}
+	got := render(c, Config{Repo: "o/r", PR: 1})
+	if strings.Contains(got, "```diff\n\n```") {
+		t.Fatalf("rendered an empty diff block for an omitted patch:\n%s", got)
+	}
+	if !strings.Contains(got, "charly.yml") || !strings.Contains(got, "patch omitted by the GitHub API") {
+		t.Errorf("omitted-patch file not marked explicitly:\n%s", got)
+	}
+}
+
 // TestFromEnvReadsEveryKnob proves each model-behaviour knob is env-configurable
 // end to end (env -> Config), which is what "set it from a GitHub Actions
 // variable" requires.
