@@ -52,6 +52,44 @@ func TestSplitUnifiedDiffRenamedPath(t *testing.T) {
 	}
 }
 
+// TestSplitUnifiedDiffQuotedPath pins the parser against git's C-quoted header
+// form (`diff --git "a/<p>" "b/<p>"`), which git emits under core.quotePath for
+// paths with spaces/tabs/quotes/non-ASCII. The key must be the UNQUOTED new
+// name, so it matches the API's `filename` and the recovery lookup hits.
+func TestSplitUnifiedDiffQuotedPath(t *testing.T) {
+	diff := "diff --git \"a/dir with space/odd\\tfile.yml\" \"b/dir with space/odd\\tfile.yml\"\n" +
+		"--- \"a/dir with space/odd\\tfile.yml\"\n" +
+		"+++ \"b/dir with space/odd\\tfile.yml\"\n" +
+		"@@ -1 +1 @@\n" +
+		"-a\n" +
+		"+b\n"
+	got := splitUnifiedDiff(diff)
+	want := "dir with space/odd\tfile.yml"
+	if _, ok := got[want]; !ok {
+		t.Fatalf("quoted path not keyed by its unquoted new name %q: %v", want, keys(got))
+	}
+	if !contains(got[want], "+b") {
+		t.Errorf("quoted-path section lost its hunk: %q", got[want])
+	}
+}
+
+// TestUnquoteGitPath covers the escape forms git emits.
+func TestUnquoteGitPath(t *testing.T) {
+	cases := map[string]string{
+		`"b/plain.txt"`:         "b/plain.txt",
+		`"b/a b.txt"`:           "b/a b.txt",
+		`"b/tab\there.txt"`:     "b/tab\there.txt",
+		`"b/quote\"inside.txt"`: "b/quote\"inside.txt",
+		`"b/back\\slash.txt"`:   "b/back\\slash.txt",
+		`"b/octal\303\251.txt"`: "b/octal\u00e9.txt",
+	}
+	for in, want := range cases {
+		if got := unquoteGitPath(in); got != want {
+			t.Errorf("unquoteGitPath(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func keys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

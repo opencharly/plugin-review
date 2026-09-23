@@ -57,6 +57,9 @@ func TestRenderMarksOmittedPatchExplicitly(t *testing.T) {
 		Meta: PRMeta{Title: "T", HeadSHA: "h"},
 		Files: []ChangedFile{
 			{Path: "charly.yml", Status: "modified", Additions: 60, Deletions: 1697, Patch: "", NoPatch: true},
+			// A pure rename/binary reports no hunks AND 0/0 — the marker must NOT
+			// claim it changed lines.
+			{Path: "renamed.bin", Status: "renamed", Additions: 0, Deletions: 0, Patch: "", NoPatch: true},
 		},
 	}
 	got := render(c, Config{Repo: "o/r", PR: 1})
@@ -65,6 +68,12 @@ func TestRenderMarksOmittedPatchExplicitly(t *testing.T) {
 	}
 	if !strings.Contains(got, "charly.yml") || !strings.Contains(got, "patch omitted by the GitHub API") {
 		t.Errorf("omitted-patch file not marked explicitly:\n%s", got)
+	}
+	if !strings.Contains(got, "renamed.bin") || !strings.Contains(got, "no textual patch") {
+		t.Errorf("0/0 (rename/binary) file not marked with the non-changed wording:\n%s", got)
+	}
+	if strings.Contains(got, "renamed.bin (renamed, +0/-0)\n\n<!-- patch omitted by the GitHub API") {
+		t.Errorf("0/0 file wrongly asserted to have changed lines:\n%s", got)
 	}
 }
 

@@ -123,9 +123,14 @@ func render(c *Context, cfg Config) string {
 		if f.Patch == "" {
 			// Never emit an empty ```diff``` block: a reviewer (and the model)
 			// must not read an API-omitted patch as "the file did not change".
-			// The file reader recovers omitted patches from the raw .diff; if
-			// this branch is reached, recovery failed for a real (+/-) change.
-			fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n<!-- patch omitted by the GitHub API (per-file diff too large) AND not recoverable from the PR .diff; additions+deletions are non-zero, so this file DID change -->\n\n", f.Path, f.Status, f.Additions, f.Deletions)
+			// The file reader recovers omitted patches from the raw .diff. The
+			// wording branches on the counts: a pure rename/binary reports no
+			// hunks AND 0/0, so it must NOT be asserted to have changed lines.
+			if f.Additions+f.Deletions == 0 {
+				fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n<!-- no textual patch: the GitHub files API reports no hunks for this file (a rename or a binary change — it may have changed name or bytes with no line diff) -->\n\n", f.Path, f.Status, f.Additions, f.Deletions)
+			} else {
+				fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n<!-- patch omitted by the GitHub API (per-file diff too large) AND not recoverable from the PR .diff; additions+deletions are non-zero, so this file DID change -->\n\n", f.Path, f.Status, f.Additions, f.Deletions)
+			}
 			continue
 		}
 		fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n```diff\n%s\n```\n\n", f.Path, f.Status, f.Additions, f.Deletions, f.Patch)
