@@ -83,10 +83,36 @@ func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFil
 		return nil, err
 	}
 	out := make([]ChangedFile, 0, len(fs))
+	needRaw := false
 	for _, f := range fs {
+		// GitHub omits the per-file `patch` field when a file's diff exceeds the
+		// API's per-file limit (and for some renamed/binary cases), setting
+		// PRFile.NoPatch. A real (+/-) change with an empty patch must still be
+		// reviewed, so recover it from the PR's raw .diff below.
+		if f.NoPatch && f.Additions+f.Deletions > 0 {
+			needRaw = true
+		}
 		out = append(out, ChangedFile{
-			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch, NoPatch: f.NoPatch,
 		})
+	}
+	if needRaw {
+		// The .diff media type always carries every file's hunk (it is not subject
+		// to the per-file `patch` omission). Fill the omitted ones so the assembler
+		// keeps its "every changed file's FULL diff" guarantee. A failure here is
+		// non-fatal: render() marks the file explicitly rather than showing an
+		// empty block.
+		if raw, derr := cli.PRDiff(ctx, repo, pr); derr == nil {
+			byPath := splitUnifiedDiff(raw)
+			for i := range out {
+				if out[i].Patch == "" && out[i].Additions+out[i].Deletions > 0 {
+					if p, ok := byPath[out[i].Path]; ok && p != "" {
+						out[i].Patch = p
+						out[i].NoPatch = false
+					}
+				}
+			}
+		}
 	}
 	return out, nil
 }

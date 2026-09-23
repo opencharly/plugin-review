@@ -43,13 +43,18 @@ type Context struct {
 	Assembled string // the exact user message sent to the model
 }
 
-// ChangedFile is one changed file with its FULL patch.
+// ChangedFile is one changed file with its FULL patch. NoPatch is true when the
+// GitHub per-file `patch` field was omitted (the file's diff exceeds the API's
+// per-file limit) — the file reader recovers those from the PR's raw .diff and
+// clears NoPatch; if recovery also fails, render() says so explicitly rather
+// than emitting an empty diff block a reviewer would read as "no change".
 type ChangedFile struct {
 	Path      string
 	Status    string
 	Additions int
 	Deletions int
 	Patch     string
+	NoPatch   bool
 }
 
 // Commit is one commit row (render() emits the sha + the first line of the
@@ -115,6 +120,19 @@ func render(c *Context, cfg Config) string {
 
 	fmt.Fprintf(&b, "## Changed files (%d total)\n\n", len(c.Files))
 	for _, f := range c.Files {
+		if f.Patch == "" {
+			// Never emit an empty ```diff``` block: a reviewer (and the model)
+			// must not read an API-omitted patch as "the file did not change".
+			// The file reader recovers omitted patches from the raw .diff. The
+			// wording branches on the counts: a pure rename/binary reports no
+			// hunks AND 0/0, so it must NOT be asserted to have changed lines.
+			if f.Additions+f.Deletions == 0 {
+				fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n<!-- no textual patch: the GitHub files API reports no hunks for this file (a rename or a binary change — it may have changed name or bytes with no line diff) -->\n\n", f.Path, f.Status, f.Additions, f.Deletions)
+			} else {
+				fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n<!-- patch omitted by the GitHub API (per-file diff too large) AND not recoverable from the PR .diff; additions+deletions are non-zero, so this file DID change -->\n\n", f.Path, f.Status, f.Additions, f.Deletions)
+			}
+			continue
+		}
 		fmt.Fprintf(&b, "### FILE: %s (%s, +%d/-%d)\n\n```diff\n%s\n```\n\n", f.Path, f.Status, f.Additions, f.Deletions, f.Patch)
 	}
 
