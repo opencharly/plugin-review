@@ -3,6 +3,7 @@ module github.com/opencharly/plugin-review/candy/plugin-review
 go 1.26.4
 
 require (
+	cuelang.org/go v0.16.1
 	github.com/openai/openai-go/v3 v3.61.0
 	github.com/opencharly/plugin-gh v0.2026266.2326
 	github.com/opencharly/sdk v0.2026266.1111
@@ -10,7 +11,6 @@ require (
 )
 
 require (
-	cuelang.org/go v0.16.1 // indirect
 	github.com/alecthomas/kong v1.15.0 // indirect
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect
 	github.com/emicklei/proto v1.14.3 // indirect
