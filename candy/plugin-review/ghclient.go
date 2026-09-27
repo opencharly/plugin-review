@@ -37,6 +37,7 @@ func (g *ghClient) client() (*ghkit.Client, error) {
 // PRMeta is the PR identity + counts the review context renders.
 type PRMeta struct {
 	Title        string
+	Author       string
 	State        string
 	HeadSHA      string
 	BaseSHA      string
@@ -59,18 +60,25 @@ func (g *ghClient) meta(ctx context.Context, repo string, pr int) (PRMeta, error
 	}, nil
 }
 
-func (g *ghClient) body(ctx context.Context, repo string, pr int) (string, error) {
+func (g *ghClient) body(ctx context.Context, repo string, pr int) (body string, author string, err error) {
 	cli, err := g.client()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var raw struct {
 		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 	}
 	if err := cli.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, pr), &raw); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return raw.Body, nil
+	author = raw.User.Login
+	if author == "" {
+		author = "unknown"
+	}
+	return raw.Body, author, nil
 }
 
 func (g *ghClient) files(ctx context.Context, repo string, pr int) ([]ChangedFile, error) {
@@ -138,13 +146,30 @@ func (g *ghClient) comments(ctx context.Context, repo string, pr int) ([]Comment
 	if err != nil {
 		return nil, err
 	}
+	var out []Comment
+	// Issue comments — the main conversation thread.
 	cs, err := cli.PRComments(ctx, repo, pr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read issue comments: %w", err)
 	}
-	out := make([]Comment, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Comment{ID: c.ID, Author: c.Author, CreatedAt: c.CreatedAt, Body: c.Body})
+		out = append(out, Comment{ID: c.ID, Kind: "issue", Author: c.Author, CreatedAt: c.CreatedAt, Body: c.Body})
+	}
+	// Submitted reviews — approvals / change requests / a review body.
+	rs, err := cli.PRReviews(ctx, repo, pr)
+	if err != nil {
+		return nil, fmt.Errorf("read reviews: %w", err)
+	}
+	for _, r := range rs {
+		out = append(out, Comment{ID: r.ID, Kind: "review:" + r.State, Author: r.Author, CreatedAt: r.SubmittedAt, Body: r.Body})
+	}
+	// Inline review comments — attached to a file/line in the diff.
+	rcs, err := cli.PRReviewComments(ctx, repo, pr)
+	if err != nil {
+		return nil, fmt.Errorf("read review comments: %w", err)
+	}
+	for _, rc := range rcs {
+		out = append(out, Comment{ID: rc.ID, Kind: "review-comment", Author: rc.Author, CreatedAt: rc.CreatedAt, Body: rc.Body})
 	}
 	return out, nil
 }

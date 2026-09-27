@@ -2,9 +2,10 @@ package pluginreview
 
 import _ "embed"
 
-// The review rulebook is EMBEDDED in the binary — there is no runtime prompt file
-// for a PR or the environment to redirect. AI_REVIEW_PROMPT_EXTRA appends
-// operator text without replacing the shipped rulebook.
+// The SHIPPED review rulebook — a fully GENERIC default. It is embedded so the
+// binary always carries a sane rulebook, and it is a DEFAULT only: an operator
+// REPLACES it wholesale with AI_REVIEW_PROMPT (an org variable passed to the
+// runner). No project-specific rule is baked in, and there is no file path.
 //
 //go:embed prompt.md
 var embeddedPrompt string
