@@ -49,8 +49,6 @@ plugin-review:
               description: "Model id for the provider."
             - name: AI_REVIEW_BASE_URL
               description: "Provider chat-completions base URL."
-            - name: AI_REVIEW_API_KEY
-              description: "Provider API key (secret)."
             - name: AI_REVIEW_REASONING_EFFORT
               description: "Thinking depth: high | medium | low | max | none (empty disables)."
             - name: AI_REVIEW_MAX_TOKENS
