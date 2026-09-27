@@ -64,10 +64,14 @@ type Commit struct {
 	Message string
 }
 
-// Comment is one comment with its FULL body — the prompt requires every comment
-// be considered and dispositioned, so the assembler delivers them all whole.
+// Comment is one comment with its FULL body and its author login. Kind is the
+// comment source: "issue" (the conversation thread), "review:<state>" (a
+// submitted review) or "review-comment" (an inline comment). The prompt requires
+// EVERY comment be considered and dispositioned, so the assembler delivers them
+// all whole — and the author login is what an authorship or sign-off check reads.
 type Comment struct {
 	ID        int
+	Kind      string
 	Author    string
 	CreatedAt string
 	Body      string
@@ -82,7 +86,7 @@ func assemble(ctx context.Context, cfg Config, gh *ghClient) (*Context, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read PR metadata: %w", err)
 	}
-	body, err := gh.body(ctx, repo, cfg.PR)
+	body, author, err := gh.body(ctx, repo, cfg.PR)
 	if err != nil {
 		return nil, fmt.Errorf("read PR body: %w", err)
 	}
@@ -98,6 +102,7 @@ func assemble(ctx context.Context, cfg Config, gh *ghClient) (*Context, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read comment thread: %w", err)
 	}
+	meta.Author = author
 	c := &Context{Meta: meta, Body: body, Files: files, Commits: commits, Comments: comments}
 	c.Assembled = render(c, cfg)
 	return c, nil
@@ -110,8 +115,8 @@ func render(c *Context, cfg Config) string {
 	fmt.Fprintf(&b, "Review pull request %s#%d — %q.\n\n", cfg.Repo, cfg.PR, c.Meta.Title)
 	// The prompt's output format requires the head SHA (and branch context); the
 	// engine MUST supply it, so it is rendered here from the fetched meta.
-	fmt.Fprintf(&b, "Head SHA: `%s` (branch: `%s`; base `%s`; state `%s`; %d changed files).\n\n",
-		c.Meta.HeadSHA, c.Meta.Branch, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles)
+	fmt.Fprintf(&b, "Opened by: @%s. Head SHA: `%s` (branch: `%s`; base `%s`; state `%s`; %d changed files).\n\n",
+		c.Meta.Author, c.Meta.HeadSHA, c.Meta.Branch, c.Meta.BaseSHA, c.Meta.State, c.Meta.ChangedFiles)
 	b.WriteString("Everything below is the COMPLETE, CURRENT state of this PR: the body, EVERY changed file's full unified diff, the commits, and every comment, in the `<pr_body>`, per-file `### FILE:` and `<comment_thread>` sections. You have all of it; do not assume anything is missing.\n\n")
 
 	b.WriteString("## PR body\n\n<pr_body>\n")
@@ -146,10 +151,10 @@ func render(c *Context, cfg Config) string {
 
 	fmt.Fprintf(&b, "## Comment thread (%d comments)\n\n<comment_thread>\n", len(c.Comments))
 	for _, cm := range c.Comments {
-		fmt.Fprintf(&b, "### Comment %d by %s at %s\n\n%s\n\n", cm.ID, cm.Author, cm.CreatedAt, cm.Body)
+		fmt.Fprintf(&b, "### Comment %d [%s] by @%s at %s\n\n%s\n\n", cm.ID, cm.Kind, cm.Author, cm.CreatedAt, cm.Body)
 	}
 
-	b.WriteString("</comment_thread>\n\nReview EVERY changed file's diff above LINE BY LINE, consider every comment above, re-derive each claim against the current state, then end with exactly `Verdict: PASS` or `Verdict: BLOCK` on the final line.\n")
+	b.WriteString("</comment_thread>\n\nReview EVERY changed file's diff above LINE BY LINE. Take EVERY comment above into consideration — each is labelled with its author login — and apply the SAME evaluation criteria to each that you apply to the body: re-derive its claim against the current state and disposition it. Then end with exactly `Verdict: PASS` or `Verdict: BLOCK` on the final line.\n")
 	return b.String()
 }
 

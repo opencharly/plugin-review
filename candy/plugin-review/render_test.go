@@ -278,3 +278,31 @@ func TestSamplingTrace(t *testing.T) {
 		t.Errorf("samplingTrace(nil temperature) = %q, want the resolved default temperature=1", s)
 	}
 }
+
+// TestRenderCarriesAuthorshipAndEveryCommentKind pins the authorship contract: the
+// review must know WHO opened the PR and WHO wrote EVERY comment (issue, review,
+// inline) so an authorship or sign-off check is made from the context alone — and
+// it must be told to weigh every comment by the same criteria as the body.
+func TestRenderCarriesAuthorshipAndEveryCommentKind(t *testing.T) {
+	c := &Context{
+		Meta: PRMeta{Title: "T", Author: "atrawog", HeadSHA: "h"},
+		Comments: []Comment{
+			{ID: 1, Kind: "issue", Author: "aitrawog", CreatedAt: "t1", Body: "issue body"},
+			{ID: 2, Kind: "review:APPROVED", Author: "atrawog", CreatedAt: "t2", Body: "review body"},
+			{ID: 3, Kind: "review-comment", Author: "someone", CreatedAt: "t3", Body: "inline body"},
+		},
+	}
+	got := render(c, Config{Repo: "o/r", PR: 9})
+	for _, want := range []string{
+		"Opened by: @atrawog",
+		"Comment 1 [issue] by @aitrawog",
+		"Comment 2 [review:APPROVED] by @atrawog",
+		"Comment 3 [review-comment] by @someone",
+		"issue body", "review body", "inline body",
+		"Take EVERY comment above into consideration",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("assembled context missing %q", want)
+		}
+	}
+}

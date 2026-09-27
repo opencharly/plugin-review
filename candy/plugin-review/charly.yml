@@ -49,8 +49,6 @@ plugin-review:
               description: "Model id for the provider."
             - name: AI_REVIEW_BASE_URL
               description: "Provider chat-completions base URL."
-            - name: AI_REVIEW_API_KEY
-              description: "Provider API key (secret)."
             - name: AI_REVIEW_REASONING_EFFORT
               description: "Thinking depth: high | medium | low | max | none (empty disables)."
             - name: AI_REVIEW_MAX_TOKENS
@@ -77,8 +75,8 @@ plugin-review:
               description: "Model context window (the fail-closed size guard)."
             - name: AI_REVIEW_CONTEXT_MARGIN
               description: "Headroom kept below the window."
-            - name: AI_REVIEW_PROMPT_EXTRA
-              description: "Operator text appended to the embedded rulebook."
+            - name: AI_REVIEW_PROMPT
+              description: "Full review rulebook; REPLACES the generic embedded default (set as an org variable, passed to the runner)."
             - name: AI_REVIEW_POST_COMMENT
               description: "Post the review as ONE PR comment (true/false)."
             - name: AI_REVIEW_DEBUG

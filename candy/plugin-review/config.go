@@ -78,12 +78,14 @@ type Config struct {
 	ContextMarginTokens int
 
 	// ── prompt ──────────────────────────────────────────────────────────────
-	// Prompt is the review rulebook. It is EMBEDDED in the binary (prompt.md
-	// beside charly.yml) — there is NO runtime file read, so a run cannot be
-	// redirected by a path in the environment. AI_REVIEW_PROMPT_EXTRA appends
-	// operator text without replacing the shipped rulebook.
-	Prompt      string
-	PromptExtra string
+	// Prompt is the review rulebook. The SHIPPED value is a fully GENERIC
+	// default embedded in the binary (prompt.md beside charly.yml) — no
+	// project-specific rule is baked in. An operator REPLACES the whole rulebook
+	// with AI_REVIEW_PROMPT (an org variable passed to the runner as an env var),
+	// so the project's real template — its rulebook, its designated maintainer
+	// logins — lives in configuration, never in the binary. There is exactly ONE
+	// prompt mechanism: no file path, no append knob.
+	Prompt string
 
 	// ── effects ─────────────────────────────────────────────────────────────
 	// OutPath writes the review body to a file (AI_REVIEW_OUT or --out).
@@ -143,8 +145,7 @@ func FromEnv() Config {
 		AttemptTimeout:      envSeconds("AI_REVIEW_ATTEMPT_TIMEOUT", DefaultAttemptTimeout),
 		ContextTokens:       envInt("AI_REVIEW_CONTEXT_TOKENS", DefaultContextTokens),
 		ContextMarginTokens: envInt("AI_REVIEW_CONTEXT_MARGIN", DefaultContextMargin),
-		Prompt:              embeddedPrompt,
-		PromptExtra:         envStr("AI_REVIEW_PROMPT_EXTRA", ""),
+		Prompt:              envStr("AI_REVIEW_PROMPT", embeddedPrompt),
 		PostComment:         envBool("AI_REVIEW_POST_COMMENT", true),
 		Debug:               envBool("AI_REVIEW_DEBUG", false),
 		ServerURL:           envStr("GITHUB_SERVER_URL", "https://github.com"),
@@ -204,15 +205,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("AI_REVIEW_CONTEXT_TOKENS must be positive")
 	}
 	return nil
-}
-
-// EffectivePrompt is the rulebook the run will use: the embedded prompt, plus any
-// operator extra. A blank embedded prompt is a build defect, not a runtime state.
-func (c Config) EffectivePrompt() string {
-	if c.PromptExtra == "" {
-		return c.Prompt
-	}
-	return c.Prompt + "\n\n## Operator additions\n\n" + c.PromptExtra
 }
 
 // ---- env helpers (one spelling per type; no scattered os.Getenv) ----
