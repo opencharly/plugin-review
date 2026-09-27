@@ -78,10 +78,14 @@ type Config struct {
 	ContextMarginTokens int
 
 	// ── prompt ──────────────────────────────────────────────────────────────
-	// Prompt is the review rulebook. It is EMBEDDED in the binary (prompt.md
-	// beside charly.yml) — there is NO runtime file read, so a run cannot be
-	// redirected by a path in the environment. AI_REVIEW_PROMPT_EXTRA appends
-	// operator text without replacing the shipped rulebook.
+	// Prompt is the review rulebook. The SHIPPED value is a fully GENERIC
+	// default embedded in the binary (prompt.md beside charly.yml) — no
+	// project-specific rule is baked in. An operator REPLACES the whole rulebook
+	// with AI_REVIEW_PROMPT (an org variable passed to the runner as an env var),
+	// so the project's real template (its rulebook, its designated maintainer
+	// logins) lives in configuration, never in the binary.
+	// AI_REVIEW_PROMPT_EXTRA appends operator text on top of whichever base is
+	// in force.
 	Prompt      string
 	PromptExtra string
 
@@ -143,7 +147,7 @@ func FromEnv() Config {
 		AttemptTimeout:      envSeconds("AI_REVIEW_ATTEMPT_TIMEOUT", DefaultAttemptTimeout),
 		ContextTokens:       envInt("AI_REVIEW_CONTEXT_TOKENS", DefaultContextTokens),
 		ContextMarginTokens: envInt("AI_REVIEW_CONTEXT_MARGIN", DefaultContextMargin),
-		Prompt:              embeddedPrompt,
+		Prompt:              envStr("AI_REVIEW_PROMPT", embeddedPrompt),
 		PromptExtra:         envStr("AI_REVIEW_PROMPT_EXTRA", ""),
 		PostComment:         envBool("AI_REVIEW_POST_COMMENT", true),
 		Debug:               envBool("AI_REVIEW_DEBUG", false),
