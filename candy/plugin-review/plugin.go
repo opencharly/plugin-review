@@ -7,6 +7,7 @@ package pluginreview
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,19 +16,25 @@ import (
 	pb "github.com/opencharly/spec/proto"
 )
 
+//go:embed schema/*.cue
+var schemaFS embed.FS
+
 const calver = "2026.263.2100"
 
 func NewProvider() pb.ProviderServer { return &provider{} }
 
+// NewMeta advertises command:review via sdk.NewMeta → BuildCapabilities, together
+// with this plugin's OWN self-contained CUE schema (schema/review.cue) served over
+// Describe — there is NO schema-less plugin: the schema is the uniform surface
+// every plugin presents (single source for params + config + Go codegen), even
+// where a capability's authored input is its pass-through CLI grammar rather than
+// a structured plugin_input.
 func NewMeta() pb.PluginMetaServer {
-	// Input-less: command:review's args are pass-through CLI tokens, so there is
-	// no typed plugin_input and NO CUE schema — the SDK's documented "input-less
-	// plugin passes a nil schemaFS" path.
 	return sdk.NewMeta(calver,
 		[]sdk.ProvidedCapability{
 			{Class: "command", Word: "review"},
 		},
-		nil)
+		schemaFS)
 }
 
 // CliMain is the OUT-OF-PROCESS CLI-mode entry (sdk.Main dual mode): fork/exec'd
