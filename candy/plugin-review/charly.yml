@@ -1,6 +1,5 @@
 plugin-review:
     candy:
-        version: 2026.263.2100
         description: |-
             The OpenCharly PR-review engine (`command:review`): it assembles the
             COMPLETE PR context (the body, EVERY changed file's full unified diff,
