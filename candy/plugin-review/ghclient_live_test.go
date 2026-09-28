@@ -3,6 +3,7 @@ package pluginreview
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -41,4 +42,36 @@ func TestFilesRecoversOmittedPatchLive(t *testing.T) {
 	if !found {
 		t.Fatalf("charly.yml not among the changed files")
 	}
+}
+
+// TestAssembleLiveCarriesAuthorship is the live proof that the assembled context
+// carries WHO opened the PR and WHO wrote EVERY comment kind (issue, review,
+// inline review) — the authorship facts a sign-off check reads. Live or skip:
+// skipped when no GitHub credential is available, never a mock of the API.
+func TestAssembleLiveCarriesAuthorship(t *testing.T) {
+	if os.Getenv("GH_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") == "" {
+		t.Skip("GH_TOKEN/GITHUB_TOKEN unset — skipping the live GitHub read")
+	}
+	cfg := Config{Repo: "opencharly/spec", PR: 181, ContextTokens: 1 << 20, ContextMarginTokens: 16 << 10}
+	c, err := assemble(context.Background(), cfg, newGHClient())
+	if err != nil {
+		t.Fatalf("assemble(): %v", err)
+	}
+	if c.Meta.Author == "" || c.Meta.Author == "unknown" {
+		t.Fatalf("PR author not carried: %q", c.Meta.Author)
+	}
+	kinds := map[string]bool{}
+	for _, cm := range c.Comments {
+		if cm.Author == "" {
+			t.Fatalf("comment %d carries no author", cm.ID)
+		}
+		kinds[cm.Kind] = true
+	}
+	if !kinds["issue"] {
+		t.Errorf("no issue comments carried (kinds=%v)", kinds)
+	}
+	if !strings.Contains(c.Assembled, "Opened by: @"+c.Meta.Author) {
+		t.Errorf("assembled context does not name the PR author %q", c.Meta.Author)
+	}
+	t.Logf("PR author=%s comments=%d kinds=%v", c.Meta.Author, len(c.Comments), kinds)
 }

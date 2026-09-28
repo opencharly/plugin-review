@@ -58,7 +58,7 @@ func Review(ctx context.Context, cfg Config) (string, error) {
 // front (body, every changed file's full diff, commits, every comment), so there
 // is nothing to fetch. The model either has the input or the run fails closed.
 func generate(ctx context.Context, cfg Config, c *Context) (string, error) {
-	prompt := cfg.EffectivePrompt()
+	prompt := cfg.Prompt
 	user := c.Assembled
 
 	// FAIL-CLOSED size guard: the input + the output reserve must fit the window.
