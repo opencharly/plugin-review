@@ -76,6 +76,15 @@ type Config struct {
 	ContextTokens int
 	// ContextMarginTokens is the headroom kept below it (AI_REVIEW_CONTEXT_MARGIN).
 	ContextMarginTokens int
+	// ThreadMaxBytes bounds the assembled COMMENT THREAD only
+	// (AI_REVIEW_CONTEXT_THREAD_MAX_BYTES). The PR body, every changed file's
+	// full patch, and the commits are NEVER bounded — the prompt reviews every
+	// file LINE BY LINE. The thread is the one section that grows without limit
+	// (a long review round trip, and the gate's own multi-KB machine notices),
+	// and on a real PR it measured ~116 KB of a 146 KB context — the size at
+	// which the model entered a degenerate repetition collapse and returned no
+	// verdict (see renderCommentThread). 0 disables the bound.
+	ThreadMaxBytes int
 
 	// ── prompt ──────────────────────────────────────────────────────────────
 	// Prompt is the review rulebook. The SHIPPED value is a fully GENERIC
@@ -117,6 +126,15 @@ const (
 	DefaultAttemptTimeout        = 15 * time.Minute
 	DefaultContextTokens         = 1 << 20 // 1,048,576
 	DefaultContextMargin         = 16 << 10
+	// DefaultThreadMaxBytes bounds ONLY the assembled comment thread. On the
+	// measured failing PR the thread was ~116 KB of a 146 KB context (80% of the
+	// input) and the model entered a degenerate repetition collapse
+	// (`finish_reason="length"`, 460 KB of reasoning, no verdict); the SAME review
+	// over a thread trimmed to ~30 KB returned `finish_reason="stop"` + a clean
+	// Verdict in 71 s. 48 KiB sits above the newest comments of a normal review
+	// round and below the measured collapse size, and the omission is SUMMARISED
+	// (renderCommentThread), never silently dropped.
+	DefaultThreadMaxBytes = 48 << 10 // 49,152
 	// The shipped, measured-BEST model-behaviour default set for
 	// deepseek-v4.1-flash: the vendor's official sampling (1.0/0.95) PLUS the
 	// frequency/presence penalties. The sampling alone is not enough on the
@@ -176,6 +194,14 @@ func FromEnv() Config {
 		c.PresencePenalty = &def
 	}
 	c.Stop = envList("AI_REVIEW_STOP")
+	// The thread bound is the ONE knob whose 0 is meaningful (disabled), so it
+	// uses the pointer reader rather than envInt: an operator raising the bound
+	// can also turn it OFF to reproduce the unbounded behaviour for an RCA.
+	if p := envInt64Ptr("AI_REVIEW_CONTEXT_THREAD_MAX_BYTES"); p != nil && *p >= 0 {
+		c.ThreadMaxBytes = int(*p)
+	} else {
+		c.ThreadMaxBytes = DefaultThreadMaxBytes
+	}
 
 	// identity: PR_NUMBER then the pull_request event payload; --repo/args are
 	// merged by the command parser after this returns.

@@ -32,6 +32,17 @@ import (
 // instructs the model to review each file's patch line by line, and the size
 // guard (config.ContextTokens) fails the run HARD if the whole context cannot fit
 // — so the review either sees every line or does not run.
+//
+// The COMMENT THREAD is the one section that grows without bound, and it is
+// BOUNDED (config.ThreadMaxBytes, see renderCommentThread): the newest comments
+// are kept in FULL, and when the thread exceeds the budget the older ones are
+// omitted with an explicit marker. This is not a size guard — it is the fix for a
+// MEASURED failure: on a real PR the thread was ~116 KB of a 146 KB context (80%
+// of the input) and the model entered a degenerate repetition collapse
+// (`finish_reason="length"`, 460 KB of reasoning, NO verdict), while the SAME
+// review over a thread trimmed to ~30 KB returned `finish_reason="stop"` + a
+// clean Verdict in 71 s. The body, the per-file diffs, and the commits are NEVER
+// bounded: the review must still see every changed LINE.
 
 // Context is the assembled, complete review input.
 type Context struct {
@@ -154,12 +165,65 @@ func render(c *Context, cfg Config) string {
 	}
 
 	fmt.Fprintf(&b, "## Comment thread (%d comments)\n\n<comment_thread>\n", len(c.Comments))
-	for _, cm := range c.Comments {
-		fmt.Fprintf(&b, "### Comment %d [%s] by @%s at %s\n\n%s\n\n", cm.ID, cm.Kind, cm.Author, cm.CreatedAt, cm.Body)
-	}
-
+	renderCommentThread(&b, c.Comments, cfg.ThreadMaxBytes)
 	b.WriteString("</comment_thread>\n\nReview EVERY changed file's diff above LINE BY LINE. Take EVERY comment above into consideration — each is labelled with its author login — and apply the SAME evaluation criteria to each that you apply to the body: re-derive its claim against the current state and disposition it. Then end with exactly `Verdict: PASS` or `Verdict: BLOCK` on the final line.\n")
 	return b.String()
+}
+
+// renderCommentThread emits the comment thread under a BYTE BUDGET, keeping the
+// NEWEST comments in FULL and SUMMARISING the omission rather than silently
+// dropping it.
+//
+// WHY (the measured defect): on a real PR the comment section was ~116 KB of a
+// 146 KB assembled context — 80% of the input — and the model then entered a
+// degenerate repetition collapse (`finish_reason="length"`, 460 KB of reasoning,
+// NO verdict). The SAME review over a thread trimmed to ~30 KB returned
+// `finish_reason="stop"` and a clean `Verdict: PASS` in 71 s. So the thread, and
+// ONLY the thread, is bounded: the body, the per-file diffs and the commits are
+// left intact because the prompt reviews every file LINE BY LINE.
+//
+// The budget is spent newest-first. A comment is kept only if it fits in what
+// remains; the first that does not fit ends the kept run, and every older comment
+// is counted into one explicit omission marker. A comment is never truncated
+// mid-body — a partial comment would let the review dispose of a claim it only
+// half saw — so a single oversized newest comment is kept whole and the rest are
+// omitted. maxBytes <= 0 disables the bound (render every comment).
+func renderCommentThread(b *strings.Builder, comments []Comment, maxBytes int) {
+	if maxBytes <= 0 || len(comments) == 0 {
+		for _, cm := range comments {
+			writeComment(b, cm)
+		}
+		return
+	}
+	// Walk newest-first and keep each comment that fits, until one does not.
+	// Comments are listed oldest-first, so the running byte count from the newest
+	// comment down to index keptTo-1 must stay within maxBytes.
+	used := 0
+	keptTo := 0 // the lowest index that is kept (comments[keptTo:] are kept)
+	for i := len(comments) - 1; i >= 0; i-- {
+		n := len(commentBlock(&comments[i]))
+		if used > 0 && used+n > maxBytes {
+			keptTo = i + 1
+			break
+		}
+		used += n
+	}
+	if keptTo > 0 {
+		fmt.Fprintf(b, "… %d older comments omitted (bodies available on the PR) …\n\n", keptTo)
+	}
+	for _, cm := range comments[keptTo:] {
+		writeComment(b, cm)
+	}
+}
+
+// commentBlock is the exact bytes one comment contributes (the same bytes
+// writeComment emits), so the budget is measured on what is actually sent.
+func commentBlock(cm *Comment) string {
+	return fmt.Sprintf("### Comment %d [%s] by @%s at %s\n\n%s\n\n", cm.ID, cm.Kind, cm.Author, cm.CreatedAt, cm.Body)
+}
+
+func writeComment(b *strings.Builder, cm Comment) {
+	b.WriteString(commentBlock(&cm))
 }
 
 func shortSHA(s string) string {
