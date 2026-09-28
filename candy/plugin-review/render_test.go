@@ -367,12 +367,16 @@ func TestRenderThreadBoundKeepsNewestAndSummarisesOmission(t *testing.T) {
 		t.Fatalf("bounded render (%d B) is not smaller than the unbounded render (%d B)", len(got), len(unbounded))
 	}
 	// (d2) the whole bounded output stays well under the budget plus the
-	// non-comment sections — the thread itself can never dominate.
+	// non-comment sections — the thread can never be dominated by an unbounded run
+	// of older comments (a single newest comment larger than the budget is kept
+	// whole by design, never sliced mid-body).
 	if int64(len(got)) > int64(DefaultThreadMaxBytes)+int64(len(bigPatch))+8192 {
 		t.Errorf("bounded output %d B exceeds budget %d + patches %d + slack", len(got), DefaultThreadMaxBytes, len(bigPatch))
 	}
-	// (d3) the oldest comment is omitted (its body does not appear).
-	if strings.Contains(got, "body-1x") {
+	// (d3) the oldest comment is omitted. Its exact header is the unambiguous
+	// marker: the bodies are "xxx… body-N", so no substring check on the body can
+	// distinguish them — the header can.
+	if strings.Contains(got, "Comment 1 [issue]") {
 		t.Errorf("the OLDEST comment survived the bound; the budget was not spent newest-first")
 	}
 }

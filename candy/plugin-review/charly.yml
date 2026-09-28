@@ -41,10 +41,11 @@ plugin-review:
             AI_REVIEW_ATTEMPT_TIMEOUT: "900"
             AI_REVIEW_CONTEXT_TOKENS: "1048576"
             AI_REVIEW_CONTEXT_MARGIN: "16384"
-            # Bound ONLY the assembled comment thread (bytes); the newest comments
-            # are kept whole and any older ones are summarised, so the thread can
-            # never dominate the context and drive the measured decode collapse.
-            # 0 disables the bound.
+            # Bound ONLY the assembled comment thread (bytes). The NEWEST comments
+            # are kept whole, so the thread can never be dominated by an unbounded
+            # run of older comments; any older ones are summarised. A single NEWEST
+            # comment larger than the budget is kept whole by design (never sliced
+            # mid-body). 0 disables the bound.
             AI_REVIEW_CONTEXT_THREAD_MAX_BYTES: "49152"
             AI_REVIEW_POST_COMMENT: "true"
             AI_REVIEW_DEBUG: "0"
