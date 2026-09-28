@@ -75,3 +75,48 @@ func TestAssembleLiveCarriesAuthorship(t *testing.T) {
 	}
 	t.Logf("PR author=%s comments=%d kinds=%v", c.Meta.Author, len(c.Comments), kinds)
 }
+
+// TestCommentsExcludesGateNoticesLive is the live proof for
+// opencharly/plugin-review#30 against the REAL opencharly/plugin-review#26 — a PR
+// whose thread carries BOTH machine notices (a "## validator INCONCLUSIVE" and a
+// "## Auto-closed:"). comments() must return NEITHER, while the RAW PRComments
+// read still contains them (so the assertion is not vacuous: the filter is doing
+// the work, not an empty PR). Live or skip: skipped when no GitHub credential is
+// available, never a mock of the API.
+func TestCommentsExcludesGateNoticesLive(t *testing.T) {
+	if os.Getenv("GH_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") == "" {
+		t.Skip("GH_TOKEN/GITHUB_TOKEN unset — skipping the live GitHub read")
+	}
+	gh := newGHClient()
+	cli, err := gh.client()
+	if err != nil {
+		t.Fatalf("client(): %v", err)
+	}
+	// The RAW issue comments — the unfiltered source comments() reads.
+	raw, err := cli.PRComments(context.Background(), "opencharly/plugin-review", 26)
+	if err != nil {
+		t.Fatalf("PRComments(): %v", err)
+	}
+	rawNotices := 0
+	for _, c := range raw {
+		if isGateNotice(c.Body) {
+			rawNotices++
+		}
+	}
+	if rawNotices == 0 {
+		t.Fatalf("fixture PR opencharly/plugin-review#26 carries no machine notice — the live assertion would be vacuous")
+	}
+	got, err := gh.comments(context.Background(), "opencharly/plugin-review", 26)
+	if err != nil {
+		t.Fatalf("comments(): %v", err)
+	}
+	for _, c := range got {
+		if isGateNotice(c.Body) {
+			t.Errorf("comments() returned a gate machine notice (id=%d): %.80q", c.ID, c.Body)
+		}
+	}
+	if len(got) >= len(raw) {
+		t.Errorf("comments() returned %d comments, raw has %d — the %d machine notice(s) were not dropped", len(got), len(raw), rawNotices)
+	}
+	t.Logf("opencharly/plugin-review#26: raw issue comments=%d (machine notices=%d), filtered comments()=%d", len(raw), rawNotices, len(got))
+}
