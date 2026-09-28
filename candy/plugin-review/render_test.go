@@ -1,6 +1,7 @@
 package pluginreview
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,5 +305,138 @@ func TestRenderCarriesAuthorshipAndEveryCommentKind(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("assembled context missing %q", want)
 		}
+	}
+}
+
+// TestRenderThreadBoundKeepsNewestAndSummarisesOmission is the R7 test for the
+// measured decode-collapse defect: on a large thread the assembled context is
+// bounded and the thread can never dominate it. A thread far larger than the byte
+// budget must (a) keep the NEWEST comments in FULL, (b) carry an explicit omission
+// marker (never a silent drop), (c) leave the file patches — which the prompt
+// reviews LINE BY LINE — untouched, and (d) keep the whole assembled comment
+// section under the budget. It FAILS without the bound (the unbounded thread
+// renders every 4 KB body).
+func TestRenderThreadBoundKeepsNewestAndSummarisesOmission(t *testing.T) {
+	// 40 comments of ~4 KB each ≈ 160 KB total, the measured thread size that
+	// drove the collapse; the budget is the shipped 48 KiB.
+	const n, bodyBytes = 40, 4096
+	comments := make([]Comment, n)
+	for i := range comments {
+		comments[i] = Comment{
+			ID: i + 1, Kind: "issue", Author: "u",
+			CreatedAt: "t", Body: strings.Repeat("x", bodyBytes) + fmt.Sprintf(" body-%d", i+1),
+		}
+	}
+	bigPatch := strings.Repeat("+ a changed line\n", 500)
+	c := &Context{
+		Meta:     PRMeta{Title: "T", HeadSHA: "h"},
+		Body:     "the body",
+		Files:    []ChangedFile{{Path: "a.go", Status: "modified", Additions: 500, Patch: bigPatch}},
+		Commits:  []Commit{{SHA: "0123456789abcdef", Message: "msg"}},
+		Comments: comments,
+	}
+	cfg := Config{Repo: "o/r", PR: 42, ThreadMaxBytes: DefaultThreadMaxBytes}
+	got := render(c, cfg)
+
+	// (c) every non-comment section is intact — the review must still see every line.
+	if !strings.Contains(got, bigPatch) {
+		t.Error("the bound dropped or truncated a file patch; only the comment thread may be bounded")
+	}
+	if !strings.Contains(got, "the body") || !strings.Contains(got, "0123456789ab") {
+		t.Error("the bound dropped the body or a commit")
+	}
+
+	// (b) the omission is EXPLICIT, never silent.
+	marker := fmt.Sprintf("older comments omitted (bodies available on the PR)")
+	if !strings.Contains(got, marker) {
+		t.Fatalf("no omission marker in the bounded thread; the drop was silent:\n%.400s", got)
+	}
+
+	// (a) the NEWEST comments are kept in full.
+	if !strings.Contains(got, fmt.Sprintf("body-%d", n)) {
+		t.Errorf("the newest comment (body-%d) was not kept", n)
+	}
+	if !strings.Contains(got, fmt.Sprintf("Comment %d [issue]", n)) {
+		t.Errorf("the newest comment's header (Comment %d) was not kept", n)
+	}
+
+	// (d1) the assembled context is far under the unbounded size.
+	unbounded := render(&Context{Meta: c.Meta, Body: c.Body, Files: c.Files, Commits: c.Commits, Comments: comments},
+		Config{Repo: "o/r", PR: 42})
+	if len(got) >= len(unbounded) {
+		t.Fatalf("bounded render (%d B) is not smaller than the unbounded render (%d B)", len(got), len(unbounded))
+	}
+	// (d2) the whole bounded output stays well under the budget plus the
+	// non-comment sections — the thread can never be dominated by an unbounded run
+	// of older comments (a single newest comment larger than the budget is kept
+	// whole by design, never sliced mid-body).
+	if int64(len(got)) > int64(DefaultThreadMaxBytes)+int64(len(bigPatch))+8192 {
+		t.Errorf("bounded output %d B exceeds budget %d + patches %d + slack", len(got), DefaultThreadMaxBytes, len(bigPatch))
+	}
+	// (d3) the oldest comment is omitted. Its exact header is the unambiguous
+	// marker: the bodies are "xxx… body-N", so no substring check on the body can
+	// distinguish them — the header can.
+	if strings.Contains(got, "Comment 1 [issue]") {
+		t.Errorf("the OLDEST comment survived the bound; the budget was not spent newest-first")
+	}
+}
+
+// TestRenderThreadSmallUnchanged pins the other half of the contract: a thread
+// that fits the budget renders EVERY comment exactly as before — the bound is not
+// a silent truncation of small threads. It FAILS without the change too, because
+// without the knob a Config that sets ThreadMaxBytes still renders all comments —
+// but with the bound a small thread must be byte-identical to the unbounded render.
+func TestRenderThreadSmallUnchanged(t *testing.T) {
+	comments := []Comment{
+		{ID: 1, Kind: "issue", Author: "u1", CreatedAt: "t1", Body: "small one"},
+		{ID: 2, Kind: "review:APPROVED", Author: "u2", CreatedAt: "t2", Body: "small two"},
+	}
+	base := &Context{Meta: PRMeta{Title: "T", HeadSHA: "h"}, Body: "b", Comments: comments}
+	bounded := render(base, Config{Repo: "o/r", PR: 3, ThreadMaxBytes: DefaultThreadMaxBytes})
+	unbounded := render(base, Config{Repo: "o/r", PR: 3})
+	if bounded != unbounded {
+		t.Errorf("a thread under the budget must be unchanged:\n bounded=%.300s\nunbounded=%.300s", bounded, unbounded)
+	}
+	for _, want := range []string{"Comment 1 [issue]", "small one", "Comment 2 [review:APPROVED]", "small two"} {
+		if !strings.Contains(bounded, want) {
+			t.Errorf("small thread lost %q", want)
+		}
+	}
+	if strings.Contains(bounded, "older comments omitted") {
+		t.Error("small thread must not carry an omission marker")
+	}
+}
+
+// TestThreadBoundDisabled pins the escape hatch: ThreadMaxBytes=0 renders the
+// whole thread, so an operator can reproduce the unbounded behaviour for an RCA.
+func TestThreadBoundDisabled(t *testing.T) {
+	comments := make([]Comment, 30)
+	for i := range comments {
+		comments[i] = Comment{ID: i + 1, Kind: "issue", Author: "u", Body: strings.Repeat("y", 4096)}
+	}
+	c := &Context{Meta: PRMeta{Title: "T"}, Comments: comments}
+	got := render(c, Config{Repo: "o/r", PR: 1, ThreadMaxBytes: 0})
+	if strings.Contains(got, "older comments omitted") {
+		t.Error("ThreadMaxBytes=0 must disable the bound (no omission)")
+	}
+	if !strings.Contains(got, "Comment 30 [issue]") || !strings.Contains(got, "Comment 1 [issue]") {
+		t.Error("ThreadMaxBytes=0 must render every comment, oldest and newest")
+	}
+}
+
+// TestFromEnvReadsThreadBound proves the bound is env-configurable end to end and
+// that an explicit 0 is honoured (meaningful, unlike a count).
+func TestFromEnvReadsThreadBound(t *testing.T) {
+	t.Setenv("AI_REVIEW_CONTEXT_THREAD_MAX_BYTES", "2048")
+	if got := FromEnv().ThreadMaxBytes; got != 2048 {
+		t.Errorf("AI_REVIEW_CONTEXT_THREAD_MAX_BYTES = %d, want 2048", got)
+	}
+	os.Unsetenv("AI_REVIEW_CONTEXT_THREAD_MAX_BYTES")
+	if got := FromEnv().ThreadMaxBytes; got != DefaultThreadMaxBytes {
+		t.Errorf("default ThreadMaxBytes = %d, want %d", got, DefaultThreadMaxBytes)
+	}
+	t.Setenv("AI_REVIEW_CONTEXT_THREAD_MAX_BYTES", "0")
+	if got := FromEnv().ThreadMaxBytes; got != 0 {
+		t.Errorf("explicit 0 must disable the bound, got %d", got)
 	}
 }
