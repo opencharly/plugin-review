@@ -3,6 +3,7 @@ package pluginreview
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	ghkit "github.com/opencharly/plugin-gh/candy/plugin-gh/gh"
 )
@@ -141,6 +142,58 @@ func (g *ghClient) commits(ctx context.Context, repo string, pr int) ([]Commit, 
 	return out, nil
 }
 
+// gateNoticeHeaders are the exact first lines of the org pr-validator's
+// MACHINE notices — comments the gate posts about ITSELF, not a human or a model
+// posting a verdict about the code.
+//
+//   - "## validator INCONCLUSIVE" — the gate produced no review verdict (a
+//     provider/stale-engine/runaway condition, not a code finding). Its body
+//     carries a <details> Diagnostics tail: on an engine decoding collapse that
+//     tail is ~65 KB of repeated "Hmm.", and the whole comment can be tens of KB.
+//   - "## Auto-closed:" — the gate closed the PR after N unanswered BLOCKs. It is
+//     a policy action notice, not a review finding.
+//
+// The marker is the deterministic key (the author is always github-actions[bot],
+// but matching the body header survives a rename of the bot account).
+var gateNoticeHeaders = []string{
+	"## validator INCONCLUSIVE",
+	"## Auto-closed:",
+}
+
+// isGateNotice reports whether body is one of the org pr-validator's machine
+// notices (see gateNoticeHeaders). It matches the header on the comment's first
+// NON-BLANK line, after trimming leading whitespace, so an incidental leading
+// newline cannot smuggle a notice past the filter.
+func isGateNotice(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, h := range gateNoticeHeaders {
+			if strings.HasPrefix(line, h) {
+				return true
+			}
+		}
+		return false // the first non-blank line is not a machine-notice header
+	}
+	return false
+}
+
+// filterGateNotices drops the org pr-validator's own machine notices from a
+// comment slice, keeping every real contribution (see isGateNotice for WHY).
+// It is pure so a test can assert the exact slice the context assembler receives.
+func filterGateNotices(in []Comment) []Comment {
+	out := in[:0:0] // never mutate the caller's backing array
+	for _, c := range in {
+		if isGateNotice(c.Body) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 func (g *ghClient) comments(ctx context.Context, repo string, pr int) ([]Comment, error) {
 	cli, err := g.client()
 	if err != nil {
@@ -171,7 +224,18 @@ func (g *ghClient) comments(ctx context.Context, repo string, pr int) ([]Comment
 	for _, rc := range rcs {
 		out = append(out, Comment{ID: rc.ID, Kind: "review-comment", Author: rc.Author, CreatedAt: rc.CreatedAt, Body: rc.Body})
 	}
-	return out, nil
+	// EXCLUDE the gate's OWN machine notices from the next review's context (see
+	// isGateNotice). A "## validator INCONCLUSIVE" or "## Auto-closed:" comment
+	// carries NO review finding — it is the gate reporting a provider/engine
+	// condition or a policy close. Feeding it back is a feedback loop: each run
+	// appends a fresh multi-KB notice (the INCONCLUSIVE <details> Diagnostics tail
+	// can be ~65 KB of a degenerate "Hmm." line), the next run re-ingests all of
+	// them, and the growing thread is itself what drives the model into the
+	// decoding repetition collapse that produces the next INCONCLUSIVE. Dropping
+	// only these two machine classes keeps the REAL review comments ("## Review —
+	// BLOCK"/"PASS"), which the prompt requires be dispositioned ("Comment intake");
+	// the human still sees the notices intact on the PR.
+	return filterGateNotices(out), nil
 }
 
 // postComment posts ONE comment (the review).

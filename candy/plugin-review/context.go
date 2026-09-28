@@ -69,6 +69,10 @@ type Commit struct {
 // submitted review) or "review-comment" (an inline comment). The prompt requires
 // EVERY comment be considered and dispositioned, so the assembler delivers them
 // all whole — and the author login is what an authorship or sign-off check reads.
+// The ONE exclusion is the gate's own machine notices ("## validator
+// INCONCLUSIVE" / "## Auto-closed:"): they carry no review finding, and feeding
+// them back is the feedback loop that grows the context into a decoding collapse
+// (see isGateNotice in ghclient.go).
 type Comment struct {
 	ID        int
 	Kind      string
