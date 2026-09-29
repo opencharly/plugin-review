@@ -71,8 +71,10 @@ $ CHARLY_PLUGIN_DIR=~/plugins charly review --self-test
   `config.go` (`FromEnv`), `ghclient.go` (the PR reads), `prompt.md` +
   `prompt_embed.go` (the embedded rulebook), `schema/review.cue`,
   `cmd/serve/main.go`.
-- `charly.yml` — the root project manifest (`discover: candy`, the model-behaviour
-  `var:`/`env_accept`/`secret_accept` surface, + the `review-skill` skill entity).
+- `charly.yml` — the root project manifest (`discover: candy` only); the
+  model-behaviour `var:`/`env_accept`/`secret_accept` surface **and** the
+  `review-skill` `skill:` entity live in the candy manifest
+  `candy/plugin-review/charly.yml`.
 - `.github/workflows/ci.yml` + `.github/workflows/release.yml` +
   `.github/workflows/tag-on-merge.yml`.
 
