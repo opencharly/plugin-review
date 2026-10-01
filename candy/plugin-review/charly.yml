@@ -16,7 +16,7 @@ plugin-review:
                 - command:review
             source: github.com/opencharly/plugin-review/candy/plugin-review
         require:
-            - '@github.com/opencharly/layer-gh:v2026.239.1624'
+            - '@github.com/opencharly/layer-gh:v2026.272.0136'
         # ── THE MODEL-BEHAVIOUR SURFACE (single source) ─────────────────────
         # Every var the engine reads (config.go FromEnv) is declared here exactly
         # once. AI_REVIEW_* are org/repo variables set on a GitHub Actions run;
