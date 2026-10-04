@@ -203,10 +203,10 @@ func budgetError(cfg Config, inputTokens int) error {
 func classify(err error, cfg Config) error {
 	var ece *llmkit.EmptyCompletionError
 	if errors.As(err, &ece) {
-		return fmt.Errorf("inconclusive: the model produced no answer and this is not retryable (%w); raise AI_REVIEW_MAX_TOKENS (currently %d) so the reasoning budget leaves room for the answer, or lower AI_REVIEW_REASONING_EFFORT", err, cfg.MaxTokens)
+		return fmt.Errorf("inconclusive: the model produced no answer and this is not retryable (%w); raise AI_REVIEW_MAX_TOKENS (currently %d) so the reasoning budget leaves room for the answer, or lower AI_REVIEW_REASONING_EFFORT (currently %q)", err, cfg.MaxTokens, cfg.ReasoningEffort)
 	}
 	if isWholeRequestDeadline(err) {
-		return fmt.Errorf("inconclusive: the turn exceeded AI_REVIEW_ATTEMPT_TIMEOUT=%s (whole-request cap; not retried); this is NOT a review verdict — raise AI_REVIEW_ATTEMPT_TIMEOUT for a legitimately long turn, or lower AI_REVIEW_REASONING_EFFORT", cfg.AttemptTimeout)
+		return fmt.Errorf("inconclusive: the turn exceeded AI_REVIEW_ATTEMPT_TIMEOUT=%s (whole-request cap; not retried) at reasoning_effort=%q max_tokens=%d; this is NOT a review verdict — bound the generation with AI_REVIEW_REASONING_EFFORT, or raise AI_REVIEW_ATTEMPT_TIMEOUT for a legitimately long turn", cfg.AttemptTimeout, cfg.ReasoningEffort, cfg.MaxTokens)
 	}
 	if isTimeoutClass(err) {
 		return fmt.Errorf("inconclusive: the LLM provider never answered or stopped streaming (idle bound %v); this is NOT a review verdict — re-run the gate", cfg.StreamIdleTimeout)

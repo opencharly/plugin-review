@@ -201,6 +201,9 @@ func TestPRFromEventPathReadsPullRequestNumber(t *testing.T) {
 // value that would break the run.
 func TestConfigInvalidEnvFallsBack(t *testing.T) {
 	t.Setenv("AI_REVIEW_MAX_TOKENS", "-5")
+	// The org workflow forwards an unset var as "" — it must mean the declared
+	// default, never "send no reasoning_effort" (plugin-review#36).
+	t.Setenv("AI_REVIEW_REASONING_EFFORT", "")
 	t.Setenv("AI_REVIEW_CONTEXT_TOKENS", "abc")
 	t.Setenv("PR_NUMBER", "0")
 	c := FromEnv()
@@ -209,6 +212,9 @@ func TestConfigInvalidEnvFallsBack(t *testing.T) {
 	}
 	if c.ContextTokens != DefaultContextTokens {
 		t.Errorf("invalid AI_REVIEW_CONTEXT_TOKENS must fall back to %d, got %d", DefaultContextTokens, c.ContextTokens)
+	}
+	if c.ReasoningEffort != DefaultReasoningEffort {
+		t.Errorf("empty AI_REVIEW_REASONING_EFFORT must fall back to %q, got %q", DefaultReasoningEffort, c.ReasoningEffort)
 	}
 }
 

@@ -50,7 +50,7 @@ func readsEnv(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	re := regexp.MustCompile(`(?:LookupEnv|Getenv|envStr|envStrLookup|envInt|envInt64|envInt64Ptr|envSeconds|envFloatPtr|envBool|envList)\("([A-Z][A-Z0-9_]+)"`)
+	re := regexp.MustCompile(`(?:LookupEnv|Getenv|envStr|envInt|envInt64|envInt64Ptr|envSeconds|envFloatPtr|envBool|envList)\("([A-Z][A-Z0-9_]+)"`)
 	anyRe := regexp.MustCompile(`getenvAny\(([^)]*)\)`)
 	strRe := regexp.MustCompile(`"([A-Z][A-Z0-9_]+)"`)
 	out := map[string]bool{}
