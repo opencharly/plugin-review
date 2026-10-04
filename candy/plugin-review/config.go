@@ -37,8 +37,15 @@ type Config struct {
 	APIKey   string
 
 	// ── model behaviour (every one env-configurable) ────────────────────────
-	// ReasoningEffort selects the thinking depth (AI_REVIEW_REASONING_EFFORT).
-	// Empty disables thinking for providers that accept "none" semantics.
+	// ReasoningEffort selects the thinking depth (AI_REVIEW_REASONING_EFFORT): the
+	// provider's effort word (low | medium | high | max | none). Read with envStr,
+	// so an unset OR empty value yields the declared default and an empty value
+	// OMITS nothing — the org workflow forwards an unset var as "". (Empty IS
+	// meaningful in two readers, deliberately and on OTHER knobs: envBool's "",
+	// e.g. AI_REVIEW_POST_COMMENT, and AI_REVIEW_SESSION_ID, where "" disables
+	// affinity.) Thinking is disabled only by the explicit word `none`: omitting
+	// the field does not disable it (Ollama Cloud then applies its own, unbounded,
+	// default thinking).
 	ReasoningEffort string
 	// MaxTokens is the SHARED reasoning+answer budget (AI_REVIEW_MAX_TOKENS).
 	// Ollama Cloud counts reasoning against it, so it must exceed what thinking
@@ -157,7 +164,7 @@ func FromEnv() Config {
 		Model:               envStr("AI_REVIEW_MODEL", DefaultModel),
 		BaseURL:             envStr("AI_REVIEW_BASE_URL", DefaultBaseURL),
 		APIKey:              envStr("AI_REVIEW_API_KEY", ""),
-		ReasoningEffort:     envStrLookup("AI_REVIEW_REASONING_EFFORT", DefaultReasoningEffort),
+		ReasoningEffort:     envStr("AI_REVIEW_REASONING_EFFORT", DefaultReasoningEffort),
 		MaxTokens:           envInt64("AI_REVIEW_MAX_TOKENS", DefaultMaxTokens),
 		StreamIdleTimeout:   envSeconds("AI_REVIEW_STREAM_IDLE_TIMEOUT", DefaultStreamIdle),
 		AttemptTimeout:      envSeconds("AI_REVIEW_ATTEMPT_TIMEOUT", DefaultAttemptTimeout),
@@ -237,15 +244,6 @@ func (c Config) Validate() error {
 
 func envStr(name, def string) string {
 	if v, ok := os.LookupEnv(name); ok && strings.TrimSpace(v) != "" {
-		return v
-	}
-	return def
-}
-
-// envStrLookup honours an explicitly-set empty value (a knob whose "" is
-// meaningful, e.g. disabling reasoning), unlike envStr.
-func envStrLookup(name, def string) string {
-	if v, ok := os.LookupEnv(name); ok {
 		return v
 	}
 	return def

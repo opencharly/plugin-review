@@ -56,7 +56,7 @@ plugin-review:
             - name: AI_REVIEW_BASE_URL
               description: "Provider chat-completions base URL."
             - name: AI_REVIEW_REASONING_EFFORT
-              description: "Thinking depth: high | medium | low | max | none (empty disables)."
+              description: "Thinking depth: high | medium | low | max | none. Unset or empty is the default (high); only `none` disables thinking."
             - name: AI_REVIEW_MAX_TOKENS
               description: "Shared reasoning+answer token budget."
             - name: AI_REVIEW_MAX_COMPLETION_TOKENS
