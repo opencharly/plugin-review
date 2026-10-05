@@ -136,10 +136,10 @@ const (
 	// inert there; it matters on a provider that honours the split, where the answer
 	// must still have room after the reasoning. 0 disables.
 	DefaultMaxCompletionTokens int64 = 384000
-	DefaultStreamIdle            = 3 * time.Minute
-	DefaultAttemptTimeout        = 15 * time.Minute
-	DefaultContextTokens         = 1 << 20 // 1,048,576
-	DefaultContextMargin         = 16 << 10
+	DefaultStreamIdle                = 3 * time.Minute
+	DefaultAttemptTimeout            = 15 * time.Minute
+	DefaultContextTokens             = 1 << 20 // 1,048,576
+	DefaultContextMargin             = 16 << 10
 	// DefaultThreadMaxBytes bounds ONLY the assembled comment thread. On the
 	// measured failing PR the thread was ~116 KB of a 146 KB context (80% of the
 	// input) and the model entered a degenerate repetition collapse

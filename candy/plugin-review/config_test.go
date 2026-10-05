@@ -158,6 +158,28 @@ func TestModelDefaultsMatchCharlyYML(t *testing.T) {
 	}
 }
 
+// TestFromEnvMaxCompletionTokensDefault pins the FromEnv APPLICATION of the shipped
+// answer-only budget: with AI_REVIEW_MAX_COMPLETION_TOKENS unset, FromEnv must set
+// *MaxCompletionTokens to DefaultMaxCompletionTokens (NOT leave it nil — the
+// pre-default behaviour); with it set, the env value wins (0 disables). This fails
+// without the FromEnv default branch: it would return nil for the unset case.
+func TestFromEnvMaxCompletionTokensDefault(t *testing.T) {
+	t.Setenv("AI_REVIEW_MAX_COMPLETION_TOKENS", "")
+	os.Unsetenv("AI_REVIEW_MAX_COMPLETION_TOKENS")
+	c := FromEnv()
+	if c.MaxCompletionTokens == nil {
+		t.Fatal("FromEnv left MaxCompletionTokens nil with the env unset — the shipped default did not apply")
+	}
+	if *c.MaxCompletionTokens != DefaultMaxCompletionTokens {
+		t.Errorf("FromEnv unset: *MaxCompletionTokens = %d, want %d", *c.MaxCompletionTokens, DefaultMaxCompletionTokens)
+	}
+	t.Setenv("AI_REVIEW_MAX_COMPLETION_TOKENS", "12345")
+	c = FromEnv()
+	if c.MaxCompletionTokens == nil || *c.MaxCompletionTokens != 12345 {
+		t.Errorf("FromEnv set: *MaxCompletionTokens = %v, want 12345 (the env override wins)", c.MaxCompletionTokens)
+	}
+}
+
 // TestVerdictMatching pins the line-anchored verdict contract the gate parses.
 func TestVerdictMatching(t *testing.T) {
 	cases := []struct {
