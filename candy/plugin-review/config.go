@@ -52,7 +52,8 @@ type Config struct {
 	// consumes. 0 disables.
 	MaxTokens int64
 	// MaxCompletionTokens is the answer-only budget for providers that separate
-	// it (AI_REVIEW_MAX_COMPLETION_TOKENS). Nil when unset.
+	// it (AI_REVIEW_MAX_COMPLETION_TOKENS). It defaults to
+	// DefaultMaxCompletionTokens (384000); 0 disables the field.
 	MaxCompletionTokens *int64
 	// Temperature (AI_REVIEW_TEMPERATURE); Nil = the review default.
 	Temperature *float64
@@ -129,6 +130,12 @@ const (
 	DefaultBaseURL               = "https://ollama.com/v1"
 	DefaultReasoningEffort       = "high"
 	DefaultMaxTokens       int64 = 262144
+	// DefaultMaxCompletionTokens is the answer-only budget, the shipped default for
+	// providers that separate it from the shared reasoning+answer budget. ollama.com
+	// counts EVERYTHING against AI_REVIEW_MAX_TOKENS and ignores this field, so it is
+	// inert there; it matters on a provider that honours the split, where the answer
+	// must still have room after the reasoning. 0 disables.
+	DefaultMaxCompletionTokens int64 = 384000
 	DefaultStreamIdle            = 3 * time.Minute
 	DefaultAttemptTimeout        = 15 * time.Minute
 	DefaultContextTokens         = 1 << 20 // 1,048,576
@@ -179,6 +186,10 @@ func FromEnv() Config {
 		SessionID:           sessionID(),
 	}
 	c.MaxCompletionTokens = envInt64Ptr("AI_REVIEW_MAX_COMPLETION_TOKENS")
+	if c.MaxCompletionTokens == nil {
+		d := DefaultMaxCompletionTokens
+		c.MaxCompletionTokens = &d
+	}
 	c.Temperature = envFloatPtr("AI_REVIEW_TEMPERATURE")
 	c.TopP = envFloatPtr("AI_REVIEW_TOP_P")
 	if c.TopP == nil {

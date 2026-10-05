@@ -36,6 +36,7 @@ plugin-review:
             AI_REVIEW_BASE_URL: https://ollama.com/v1
             AI_REVIEW_REASONING_EFFORT: high
             AI_REVIEW_MAX_TOKENS: "262144"
+            AI_REVIEW_MAX_COMPLETION_TOKENS: "384000"
             AI_REVIEW_STREAM_IDLE_TIMEOUT: "180"
             AI_REVIEW_ATTEMPT_TIMEOUT: "900"
             AI_REVIEW_CONTEXT_TOKENS: "1048576"

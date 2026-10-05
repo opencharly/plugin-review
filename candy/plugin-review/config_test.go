@@ -147,8 +147,9 @@ func TestModelDefaultsMatchCharlyYML(t *testing.T) {
 		}
 	}
 	wantStr := map[string]string{
-		"AI_REVIEW_REASONING_EFFORT": DefaultReasoningEffort,
-		"AI_REVIEW_MAX_TOKENS":       fmt.Sprintf("%d", DefaultMaxTokens),
+		"AI_REVIEW_REASONING_EFFORT":      DefaultReasoningEffort,
+		"AI_REVIEW_MAX_TOKENS":            fmt.Sprintf("%d", DefaultMaxTokens),
+		"AI_REVIEW_MAX_COMPLETION_TOKENS": fmt.Sprintf("%d", DefaultMaxCompletionTokens),
 	}
 	for k, v := range wantStr {
 		if got, ok := declared[k]; !ok || got != v {
