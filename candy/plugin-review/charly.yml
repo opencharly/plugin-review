@@ -138,9 +138,5 @@ review-skill:
         name: review
         family: review
         owner: plugin-review
-        description: |-
-            The `charly review` PR-review engine — assembles the complete PR context into
-            ONE message and makes ONE model call for a deterministic Verdict: PASS|BLOCK.
-            Use to review a PR.
         triggers:
             - "`charly review` / review a PR / PR verdict"

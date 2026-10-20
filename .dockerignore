@@ -1,0 +1,17 @@
+# .dockerignore (generated -- do not edit; source: defaults.context_ignore in charly.yml)
+.git
+bin
+charly
+*.md
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+**/node_modules
+**/.git
+**/.DS_Store
+**/*~
+**/*.swp
+**/*.swo
+**/.pytest_cache
+**/.mypy_cache
